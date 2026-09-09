@@ -156,6 +156,13 @@ model Tenant {
   scenarioSessionInstructors ScenarioSessionInstructor[]
   scenarioSessionStudents    ScenarioSessionStudent[]
 
+  solverJobs           SolverJob[]
+  solverRuns           SolverRun[]
+  solverObjectives     SolverObjective[]
+  constraintViolations ConstraintViolation[]
+  scenarioMetrics      ScenarioMetric[]
+  scenarioChanges      ScenarioChange[]
+
   @@index([status])
 }
 
@@ -897,6 +904,8 @@ model PlanningRule {
   student          Student?          @relation(fields: [studentId], references: [id], onDelete: Restrict)
   instructor       Instructor?       @relation(fields: [instructorId], references: [id], onDelete: Restrict)
 
+  violations ConstraintViolation[]
+
   @@index([tenantId, ruleType])
   @@index([tenantId, scopeType])
   @@index([tenantId, active])
@@ -988,6 +997,11 @@ model PlanScenario {
 
   sessions ScenarioSession[]
 
+  solverJobs SolverJob[]
+  objectives SolverObjective[]
+  metrics    ScenarioMetric[]
+  changes    ScenarioChange[]
+
   @@index([tenantId, planId])
   @@index([tenantId, status])
 }
@@ -1017,6 +1031,8 @@ model Session {
   students    SessionStudent[]
 
   scenarioCopies ScenarioSession[]
+
+  scenarioChanges ScenarioChange[]
 
   @@index([tenantId, planId, date])
   @@index([tenantId, teachingGroupId])
@@ -1076,6 +1092,8 @@ model ScenarioSession {
   instructors ScenarioSessionInstructor[]
   students    ScenarioSessionStudent[]
 
+  changes ScenarioChange[]
+
   @@index([tenantId, planScenarioId, date])
   @@index([tenantId, sourceSessionId])
   @@index([tenantId, teachingGroupId])
@@ -1107,4 +1125,194 @@ model ScenarioSessionStudent {
 
   @@unique([tenantId, scenarioSessionId, studentId])
   @@index([tenantId, studentId])
+}
+
+enum SolverJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum SolverRunStatus {
+  STARTED
+  FEASIBLE
+  OPTIMAL
+  INFEASIBLE
+  UNKNOWN
+  FAILED
+}
+
+enum ConstraintViolationSeverity {
+  INFO
+  WARNING
+  BLOCKING
+}
+
+enum ScenarioMetricType {
+  TOTAL_TEACHING_MINUTES
+  UNFULFILLED_TEACHING_MINUTES
+  STUDENT_IDLE_MINUTES
+  INSTRUCTOR_IDLE_MINUTES
+  ROOM_UTILISATION_PERCENT
+  INSTRUCTOR_UTILISATION_PERCENT
+  SESSION_CHANGE_COUNT
+  ROOM_CHANGE_COUNT
+  INSTRUCTOR_CHANGE_COUNT
+  TRAVEL_MINUTES
+  SOFT_CONSTRAINT_PENALTY
+  HARD_CONSTRAINT_VIOLATIONS
+  OTHER
+}
+
+enum ScenarioChangeType {
+  CREATED
+  MOVED
+  CANCELLED
+  ROOM_CHANGED
+  INSTRUCTOR_CHANGED
+  STUDENTS_CHANGED
+  LOCK_CHANGED
+  OTHER
+}
+
+model SolverJob {
+  id             String          @id @default(uuid())
+  tenantId       String
+  planScenarioId String
+  status         SolverJobStatus @default(QUEUED)
+  requestedById  String?
+  priority       Int             @default(100)
+  config         Json?
+  queuedAt       DateTime        @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  failureMessage String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planScenario PlanScenario @relation(fields: [planScenarioId], references: [id], onDelete: Cascade)
+
+  runs SolverRun[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, planScenarioId])
+  @@index([tenantId, queuedAt])
+}
+
+model SolverRun {
+  id                String          @id @default(uuid())
+  tenantId          String
+  solverJobId       String
+  status            SolverRunStatus @default(STARTED)
+  solverName        String
+  solverVersion     String?
+  objectiveValue    Float?
+  bestBound         Float?
+  wallTimeSeconds   Float?
+  branches          BigInt?
+  conflicts         BigInt?
+  deterministicTime Float?
+  startedAt         DateTime        @default(now())
+  completedAt       DateTime?
+  diagnostics       Json?
+  createdAt         DateTime        @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  solverJob SolverJob @relation(fields: [solverJobId], references: [id], onDelete: Cascade)
+
+  violations ConstraintViolation[]
+
+  @@index([tenantId, solverJobId])
+  @@index([tenantId, status])
+}
+
+model SolverObjective {
+  id             String   @id @default(uuid())
+  tenantId       String
+  planScenarioId String
+  key            String
+  name           String
+  weight         Int      @default(100)
+  targetValue    Float?
+  actualValue    Float?
+  penaltyValue   Float?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planScenario PlanScenario @relation(fields: [planScenarioId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, planScenarioId, key])
+  @@index([tenantId, planScenarioId])
+}
+
+model ConstraintViolation {
+  id             String                      @id @default(uuid())
+  tenantId       String
+  solverRunId    String
+  planningRuleId String?
+  severity       ConstraintViolationSeverity
+  code           String
+  description    String?
+  entityType     String?
+  entityId       String?
+  penaltyValue   Float?
+  metadata       Json?
+  createdAt      DateTime                    @default(now())
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  solverRun    SolverRun     @relation(fields: [solverRunId], references: [id], onDelete: Cascade)
+  planningRule PlanningRule? @relation(fields: [planningRuleId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, solverRunId])
+  @@index([tenantId, planningRuleId])
+  @@index([tenantId, severity])
+  @@index([tenantId, entityType, entityId])
+}
+
+model ScenarioMetric {
+  id             String             @id @default(uuid())
+  tenantId       String
+  planScenarioId String
+  metricType     ScenarioMetricType
+  key            String?
+  value          Float
+  unit           String?
+  metadata       Json?
+  createdAt      DateTime           @default(now())
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planScenario PlanScenario @relation(fields: [planScenarioId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, planScenarioId])
+  @@index([tenantId, metricType])
+}
+
+model ScenarioChange {
+  id                String             @id @default(uuid())
+  tenantId          String
+  planScenarioId    String
+  scenarioSessionId String?
+  sourceSessionId   String?
+  changeType        ScenarioChangeType
+  explanationCode   String?
+  explanation       String?
+  beforeState       Json?
+  afterState        Json?
+  penaltyDelta      Float?
+  createdAt         DateTime           @default(now())
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planScenario    PlanScenario     @relation(fields: [planScenarioId], references: [id], onDelete: Cascade)
+  scenarioSession ScenarioSession? @relation(fields: [scenarioSessionId], references: [id], onDelete: SetNull)
+  sourceSession   Session?         @relation(fields: [sourceSessionId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, planScenarioId])
+  @@index([tenantId, scenarioSessionId])
+  @@index([tenantId, sourceSessionId])
+  @@index([tenantId, changeType])
 }
