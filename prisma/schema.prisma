@@ -72,7 +72,6 @@ enum EventType {
   OTHER
 }
 
-
 enum PersonStatus {
   ACTIVE
   INACTIVE
@@ -138,6 +137,13 @@ model Tenant {
   teachingGroups            TeachingGroup[]
   teachingGroupStudents     TeachingGroupStudent[]
 
+  calendarDays             CalendarDay[]
+  timeBlocks               TimeBlock[]
+  studentAvailabilities    StudentAvailability[]
+  instructorAvailabilities InstructorAvailability[]
+  roomAvailabilities       RoomAvailability[]
+  planningExceptions       PlanningException[]
+
   @@index([status])
 }
 
@@ -163,6 +169,8 @@ model OrganisationUnit {
 
   primaryStudents    Student[]    @relation("StudentPrimaryOrganisation")
   primaryInstructors Instructor[] @relation("InstructorPrimaryOrganisation")
+
+  planningExceptions PlanningException[]
 
   @@unique([tenantId, code])
   @@index([tenantId, parentId])
@@ -202,9 +210,11 @@ model Location {
   outgoingRelations LocationRelation[] @relation("LocationRelationFrom")
   incomingRelations LocationRelation[] @relation("LocationRelationTo")
 
-  primaryStudents     Student[]           @relation("StudentPrimaryLocation")
-  primaryInstructors  Instructor[]        @relation("InstructorPrimaryLocation")
+  primaryStudents     Student[]            @relation("StudentPrimaryLocation")
+  primaryInstructors  Instructor[]         @relation("InstructorPrimaryLocation")
   instructorLocations InstructorLocation[]
+
+  planningExceptions PlanningException[]
 
   @@unique([tenantId, code])
   @@index([tenantId, parentId])
@@ -251,6 +261,9 @@ model Room {
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   location Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
 
+  availabilities     RoomAvailability[]
+  planningExceptions PlanningException[]
+
   @@unique([tenantId, code])
   @@index([tenantId, locationId])
   @@index([tenantId, active])
@@ -294,8 +307,10 @@ model AcademicPeriod {
 
   planningScopes PlanningScope[]
 
- studentCourseRequirements StudentCourseRequirement[]
- teachingGroups            TeachingGroup[]
+  studentCourseRequirements StudentCourseRequirement[]
+  teachingGroups            TeachingGroup[]
+
+  calendarDays CalendarDay[]
 
   @@unique([tenantId, code])
   @@index([tenantId, parentId])
@@ -369,203 +384,373 @@ model EventLog {
   @@index([tenantId, actorId])
 }
 
-
 model Student {
- id                        String       @id @default(uuid())
- tenantId                  String
- externalId                String?
- sourceSystem              String?
- firstName                 String
- lastName                  String
- status                    PersonStatus @default(ACTIVE)
- primaryOrganisationUnitId String?
- primaryLocationId         String?
- activeFrom                DateTime?
- activeTo                  DateTime?
- createdAt                 DateTime     @default(now())
- updatedAt                 DateTime     @updatedAt
+  id                        String       @id @default(uuid())
+  tenantId                  String
+  externalId                String?
+  sourceSystem              String?
+  firstName                 String
+  lastName                  String
+  status                    PersonStatus @default(ACTIVE)
+  primaryOrganisationUnitId String?
+  primaryLocationId         String?
+  activeFrom                DateTime?
+  activeTo                  DateTime?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
 
- tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- primaryOrganisationUnit OrganisationUnit? @relation("StudentPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
- primaryLocation         Location?         @relation("StudentPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
+  tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  primaryOrganisationUnit OrganisationUnit? @relation("StudentPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
+  primaryLocation         Location?         @relation("StudentPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
 
- courseRequirements StudentCourseRequirement[]
- groupMemberships   TeachingGroupStudent[]
+  courseRequirements StudentCourseRequirement[]
+  groupMemberships   TeachingGroupStudent[]
 
- @@unique([tenantId, externalId, sourceSystem])
- @@index([tenantId, status])
- @@index([tenantId, lastName, firstName])
- @@index([tenantId, primaryOrganisationUnitId])
- @@index([tenantId, primaryLocationId])
+  availabilities     StudentAvailability[]
+  planningExceptions PlanningException[]
+
+  @@unique([tenantId, externalId, sourceSystem])
+  @@index([tenantId, status])
+  @@index([tenantId, lastName, firstName])
+  @@index([tenantId, primaryOrganisationUnitId])
+  @@index([tenantId, primaryLocationId])
 }
 
 model Instructor {
- id                        String       @id @default(uuid())
- tenantId                  String
- externalId                String?
- sourceSystem              String?
- firstName                 String
- lastName                  String
- status                    PersonStatus @default(ACTIVE)
- employmentPercentage      Decimal?     @db.Decimal(5, 2)
- maxTeachingMinutesPerWeek Int?
- primaryOrganisationUnitId String?
- primaryLocationId         String?
- activeFrom                DateTime?
- activeTo                  DateTime?
- createdAt                 DateTime     @default(now())
- updatedAt                 DateTime     @updatedAt
+  id                        String       @id @default(uuid())
+  tenantId                  String
+  externalId                String?
+  sourceSystem              String?
+  firstName                 String
+  lastName                  String
+  status                    PersonStatus @default(ACTIVE)
+  employmentPercentage      Decimal?     @db.Decimal(5, 2)
+  maxTeachingMinutesPerWeek Int?
+  primaryOrganisationUnitId String?
+  primaryLocationId         String?
+  activeFrom                DateTime?
+  activeTo                  DateTime?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
 
- tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- primaryOrganisationUnit OrganisationUnit? @relation("InstructorPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
- primaryLocation         Location?         @relation("InstructorPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
+  tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  primaryOrganisationUnit OrganisationUnit? @relation("InstructorPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
+  primaryLocation         Location?         @relation("InstructorPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
 
- courses   InstructorCourse[]
- locations InstructorLocation[]
+  courses   InstructorCourse[]
+  locations InstructorLocation[]
 
- @@unique([tenantId, externalId, sourceSystem])
- @@index([tenantId, status])
- @@index([tenantId, lastName, firstName])
- @@index([tenantId, primaryOrganisationUnitId])
- @@index([tenantId, primaryLocationId])
+  availabilities     InstructorAvailability[]
+  planningExceptions PlanningException[]
+
+  @@unique([tenantId, externalId, sourceSystem])
+  @@index([tenantId, status])
+  @@index([tenantId, lastName, firstName])
+  @@index([tenantId, primaryOrganisationUnitId])
+  @@index([tenantId, primaryLocationId])
 }
 
 model Course {
- id                         String             @id @default(uuid())
- tenantId                   String
- externalId                 String?
- sourceSystem               String?
- code                       String?
- name                       String
- deliveryMode               CourseDeliveryMode @default(IN_PERSON)
- standardGroupSize          Int?
- maxGroupSize               Int?
- minSessionMinutes          Int?
- preferredSessionMinutes    Int?
- maxSessionMinutes          Int?
- allowDoubleSession         Boolean            @default(false)
- maxSessionsPerDay          Int?
- active                     Boolean            @default(true)
- createdAt                  DateTime           @default(now())
- updatedAt                  DateTime           @updatedAt
+  id                      String             @id @default(uuid())
+  tenantId                String
+  externalId              String?
+  sourceSystem            String?
+  code                    String?
+  name                    String
+  deliveryMode            CourseDeliveryMode @default(IN_PERSON)
+  standardGroupSize       Int?
+  maxGroupSize            Int?
+  minSessionMinutes       Int?
+  preferredSessionMinutes Int?
+  maxSessionMinutes       Int?
+  allowDoubleSession      Boolean            @default(false)
+  maxSessionsPerDay       Int?
+  active                  Boolean            @default(true)
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
 
- tenant       Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- instructors  InstructorCourse[]
- requirements StudentCourseRequirement[]
- groups       TeachingGroup[]
+  tenant       Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructors  InstructorCourse[]
+  requirements StudentCourseRequirement[]
+  groups       TeachingGroup[]
 
- @@unique([tenantId, code])
- @@unique([tenantId, externalId, sourceSystem])
- @@index([tenantId, active])
- @@index([tenantId, name])
+  @@unique([tenantId, code])
+  @@unique([tenantId, externalId, sourceSystem])
+  @@index([tenantId, active])
+  @@index([tenantId, name])
 }
 
 model InstructorCourse {
- id                 String             @id @default(uuid())
- tenantId           String
- instructorId       String
- courseId           String
- qualificationLevel QualificationLevel @default(PRIMARY)
- priority           Int                @default(100)
- active             Boolean            @default(true)
- validFrom          DateTime?
- validTo            DateTime?
- createdAt          DateTime           @default(now())
- updatedAt          DateTime           @updatedAt
+  id                 String             @id @default(uuid())
+  tenantId           String
+  instructorId       String
+  courseId           String
+  qualificationLevel QualificationLevel @default(PRIMARY)
+  priority           Int                @default(100)
+  active             Boolean            @default(true)
+  validFrom          DateTime?
+  validTo            DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
- tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
- course     Course     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  course     Course     @relation(fields: [courseId], references: [id], onDelete: Cascade)
 
- @@unique([tenantId, instructorId, courseId])
- @@index([tenantId, instructorId])
- @@index([tenantId, courseId])
+  @@unique([tenantId, instructorId, courseId])
+  @@index([tenantId, instructorId])
+  @@index([tenantId, courseId])
 }
 
 model InstructorLocation {
- id           String   @id @default(uuid())
- tenantId     String
- instructorId String
- locationId   String
- allowed      Boolean  @default(true)
- priority     Int      @default(100)
- validFrom    DateTime?
- validTo      DateTime?
- createdAt    DateTime @default(now())
- updatedAt    DateTime @updatedAt
+  id           String    @id @default(uuid())
+  tenantId     String
+  instructorId String
+  locationId   String
+  allowed      Boolean   @default(true)
+  priority     Int       @default(100)
+  validFrom    DateTime?
+  validTo      DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
- tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
- location   Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  location   Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
- @@unique([tenantId, instructorId, locationId])
- @@index([tenantId, instructorId])
- @@index([tenantId, locationId])
+  @@unique([tenantId, instructorId, locationId])
+  @@index([tenantId, instructorId])
+  @@index([tenantId, locationId])
 }
 
 model StudentCourseRequirement {
- id               String              @id @default(uuid())
- tenantId         String
- studentId        String
- courseId         String
- academicPeriodId String
- requiredAmount   Int
- unit             RequirementUnit     @default(MINUTES)
- priority         RequirementPriority @default(NORMAL)
- active           Boolean             @default(true)
- createdAt        DateTime            @default(now())
- updatedAt        DateTime            @updatedAt
+  id               String              @id @default(uuid())
+  tenantId         String
+  studentId        String
+  courseId         String
+  academicPeriodId String
+  requiredAmount   Int
+  unit             RequirementUnit     @default(MINUTES)
+  priority         RequirementPriority @default(NORMAL)
+  active           Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
- tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- student        Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
- course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
- academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  student        Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
 
- @@unique([tenantId, studentId, courseId, academicPeriodId])
- @@index([tenantId, studentId])
- @@index([tenantId, courseId])
- @@index([tenantId, academicPeriodId])
+  @@unique([tenantId, studentId, courseId, academicPeriodId])
+  @@index([tenantId, studentId])
+  @@index([tenantId, courseId])
+  @@index([tenantId, academicPeriodId])
 }
 
 model TeachingGroup {
- id               String              @id @default(uuid())
- tenantId         String
- academicPeriodId String
- courseId         String
- name             String
- code             String?
- minStudents      Int?
- maxStudents      Int?
- status           TeachingGroupStatus @default(DRAFT)
- createdAt        DateTime            @default(now())
- updatedAt        DateTime            @updatedAt
+  id               String              @id @default(uuid())
+  tenantId         String
+  academicPeriodId String
+  courseId         String
+  name             String
+  code             String?
+  minStudents      Int?
+  maxStudents      Int?
+  status           TeachingGroupStatus @default(DRAFT)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
- tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
- course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+  course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
 
- students TeachingGroupStudent[]
+  students TeachingGroupStudent[]
 
- @@unique([tenantId, code])
- @@index([tenantId, academicPeriodId])
- @@index([tenantId, courseId])
- @@index([tenantId, status])
+  @@unique([tenantId, code])
+  @@index([tenantId, academicPeriodId])
+  @@index([tenantId, courseId])
+  @@index([tenantId, status])
 }
 
 model TeachingGroupStudent {
- id              String   @id @default(uuid())
- tenantId        String
- teachingGroupId String
- studentId       String
- validFrom       DateTime?
- validTo         DateTime?
- createdAt       DateTime @default(now())
+  id              String    @id @default(uuid())
+  tenantId        String
+  teachingGroupId String
+  studentId       String
+  validFrom       DateTime?
+  validTo         DateTime?
+  createdAt       DateTime  @default(now())
 
- tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
- teachingGroup TeachingGroup @relation(fields: [teachingGroupId], references: [id], onDelete: Cascade)
- student       Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  teachingGroup TeachingGroup @relation(fields: [teachingGroupId], references: [id], onDelete: Cascade)
+  student       Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
- @@unique([tenantId, teachingGroupId, studentId])
- @@index([tenantId, teachingGroupId])
- @@index([tenantId, studentId])
+  @@unique([tenantId, teachingGroupId, studentId])
+  @@index([tenantId, teachingGroupId])
+  @@index([tenantId, studentId])
+}
+
+enum CalendarDayType {
+  TEACHING
+  HOLIDAY
+  PLANNING_DAY
+  EXAM
+  PRACTICE
+  ACTIVITY
+  CLOSED
+  OTHER
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  UNAVAILABLE
+  PREFERRED
+  DISCOURAGED
+}
+
+enum ExceptionType {
+  INSTRUCTOR_ABSENCE
+  STUDENT_ABSENCE
+  ROOM_UNAVAILABLE
+  LOCATION_UNAVAILABLE
+  ACTIVITY_DAY
+  SCHOOL_CLOSED
+  OTHER
+}
+
+enum ExceptionStatus {
+  DRAFT
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
+enum ExceptionImpactMode {
+  BLOCK
+  REDUCE_CAPACITY
+  INFORMATION_ONLY
+}
+
+model CalendarDay {
+  id               String          @id @default(uuid())
+  tenantId         String
+  academicPeriodId String?
+  date             DateTime        @db.Date
+  dayType          CalendarDayType @default(TEACHING)
+  name             String?
+  teachingAllowed  Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  academicPeriod AcademicPeriod? @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, date])
+  @@index([tenantId, dayType])
+  @@index([tenantId, academicPeriodId])
+}
+
+model TimeBlock {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String?
+  startMinute Int
+  endMinute   Int
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, active])
+  @@index([tenantId, startMinute, endMinute])
+}
+
+model StudentAvailability {
+  id          String             @id @default(uuid())
+  tenantId    String
+  studentId   String
+  date        DateTime           @db.Date
+  startMinute Int
+  endMinute   Int
+  status      AvailabilityStatus @default(AVAILABLE)
+  reasonCode  String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, studentId, date])
+  @@index([tenantId, date, status])
+}
+
+model InstructorAvailability {
+  id           String             @id @default(uuid())
+  tenantId     String
+  instructorId String
+  date         DateTime           @db.Date
+  startMinute  Int
+  endMinute    Int
+  status       AvailabilityStatus @default(AVAILABLE)
+  reasonCode   String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, instructorId, date])
+  @@index([tenantId, date, status])
+}
+
+model RoomAvailability {
+  id          String             @id @default(uuid())
+  tenantId    String
+  roomId      String
+  date        DateTime           @db.Date
+  startMinute Int
+  endMinute   Int
+  status      AvailabilityStatus @default(AVAILABLE)
+  reasonCode  String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, roomId, date])
+  @@index([tenantId, date, status])
+}
+
+model PlanningException {
+  id                 String              @id @default(uuid())
+  tenantId           String
+  type               ExceptionType
+  status             ExceptionStatus     @default(ACTIVE)
+  impactMode         ExceptionImpactMode @default(BLOCK)
+  name               String
+  description        String?
+  startAt            DateTime
+  endAt              DateTime
+  instructorId       String?
+  studentId          String?
+  roomId             String?
+  locationId         String?
+  organisationUnitId String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructor       Instructor?       @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+  student          Student?          @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  room             Room?             @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  location         Location?         @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  organisationUnit OrganisationUnit? @relation(fields: [organisationUnitId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, startAt, endAt])
+  @@index([tenantId, instructorId])
+  @@index([tenantId, studentId])
+  @@index([tenantId, roomId])
+  @@index([tenantId, locationId])
 }
