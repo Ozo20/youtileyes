@@ -1,7 +1,6 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// Youtileyes core data model.
+// First slice: tenant, organisation, locations, rooms, academic periods,
+// planning scopes and audit trail.
 
 generator client {
   provider = "prisma-client"
@@ -10,4 +9,563 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum OrganisationUnitType {
+  UNIVERSITY
+  FACULTY
+  DEPARTMENT
+  SCHOOL
+  PROGRAMME_AREA
+  ADMINISTRATIVE_UNIT
+  OTHER
+}
+
+enum LocationType {
+  REGION
+  CITY
+  CAMPUS
+  BUILDING
+  ZONE
+  FLOOR
+  ROOM_GROUP
+  OTHER
+}
+
+enum LocationRelationType {
+  TRAVEL
+  WALKING
+  SHUTTLE
+  OTHER
+}
+
+enum AcademicPeriodType {
+  ACADEMIC_YEAR
+  SEMESTER
+  TERM
+  TEACHING_PERIOD
+  EXAM_PERIOD
+  OTHER
+}
+
+enum PlanningScopeStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum EventType {
+  CREATED
+  UPDATED
+  DEACTIVATED
+  REACTIVATED
+  ARCHIVED
+  IMPORTED
+  GENERATED
+  PUBLISHED
+  OTHER
+}
+
+
+enum PersonStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum RequirementPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum TeachingGroupStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum CourseDeliveryMode {
+  IN_PERSON
+  ONLINE
+  HYBRID
+}
+
+enum QualificationLevel {
+  PRIMARY
+  SECONDARY
+  SUPPORT
+}
+
+enum RequirementUnit {
+  MINUTES
+  HOURS
+}
+
+model Tenant {
+  id        String       @id @default(uuid())
+  name      String
+  code      String       @unique
+  status    TenantStatus @default(ACTIVE)
+  timezone  String       @default("Europe/Oslo")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  organisationUnits              OrganisationUnit[]
+  locations                      Location[]
+  rooms                          Room[]
+  academicPeriods                AcademicPeriod[]
+  planningScopes                 PlanningScope[]
+  eventLogs                      EventLog[]
+  locationRelations              LocationRelation[]
+  organisationUnitLocations      OrganisationUnitLocation[]
+  planningScopeOrganisationUnits PlanningScopeOrganisationUnit[]
+  planningScopeLocations         PlanningScopeLocation[]
+
+  students                  Student[]
+  instructors               Instructor[]
+  courses                   Course[]
+  instructorCourses         InstructorCourse[]
+  instructorLocations       InstructorLocation[]
+  studentCourseRequirements StudentCourseRequirement[]
+  teachingGroups            TeachingGroup[]
+  teachingGroupStudents     TeachingGroupStudent[]
+
+  @@index([status])
+}
+
+model OrganisationUnit {
+  id        String               @id @default(uuid())
+  tenantId  String
+  parentId  String?
+  type      OrganisationUnitType
+  name      String
+  code      String?
+  active    Boolean              @default(true)
+  validFrom DateTime?
+  validTo   DateTime?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  parent   OrganisationUnit?  @relation("OrganisationHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children OrganisationUnit[] @relation("OrganisationHierarchy")
+
+  locationLinks OrganisationUnitLocation[]
+  scopeLinks    PlanningScopeOrganisationUnit[]
+
+  primaryStudents    Student[]    @relation("StudentPrimaryOrganisation")
+  primaryInstructors Instructor[] @relation("InstructorPrimaryOrganisation")
+
+  @@unique([tenantId, code])
+  @@index([tenantId, parentId])
+  @@index([tenantId, type])
+  @@index([tenantId, active])
+}
+
+model Location {
+  id           String       @id @default(uuid())
+  tenantId     String
+  parentId     String?
+  type         LocationType
+  name         String
+  code         String?
+  addressLine1 String?
+  addressLine2 String?
+  postalCode   String?
+  city         String?
+  countryCode  String?      @db.VarChar(2)
+  latitude     Decimal?     @db.Decimal(9, 6)
+  longitude    Decimal?     @db.Decimal(9, 6)
+  timezone     String?
+  active       Boolean      @default(true)
+  validFrom    DateTime?
+  validTo      DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  parent   Location?  @relation("LocationHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children Location[] @relation("LocationHierarchy")
+
+  rooms             Room[]
+  organisationLinks OrganisationUnitLocation[]
+  scopeLinks        PlanningScopeLocation[]
+
+  outgoingRelations LocationRelation[] @relation("LocationRelationFrom")
+  incomingRelations LocationRelation[] @relation("LocationRelationTo")
+
+  primaryStudents     Student[]           @relation("StudentPrimaryLocation")
+  primaryInstructors  Instructor[]        @relation("InstructorPrimaryLocation")
+  instructorLocations InstructorLocation[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, parentId])
+  @@index([tenantId, type])
+  @@index([tenantId, active])
+}
+
+model LocationRelation {
+  id                   String               @id @default(uuid())
+  tenantId             String
+  fromLocationId       String
+  toLocationId         String
+  relationType         LocationRelationType @default(TRAVEL)
+  minimumMinutes       Int
+  allowSameDay         Boolean              @default(true)
+  allowBetweenSessions Boolean              @default(true)
+  preferencePenalty    Int                  @default(0)
+  active               Boolean              @default(true)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  fromLocation Location @relation("LocationRelationFrom", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   Location @relation("LocationRelationTo", fields: [toLocationId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, fromLocationId, toLocationId, relationType])
+  @@index([tenantId, fromLocationId])
+  @@index([tenantId, toLocationId])
+}
+
+model Room {
+  id         String    @id @default(uuid())
+  tenantId   String
+  locationId String
+  name       String
+  code       String?
+  capacity   Int
+  active     Boolean   @default(true)
+  validFrom  DateTime?
+  validTo    DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, code])
+  @@index([tenantId, locationId])
+  @@index([tenantId, active])
+}
+
+model OrganisationUnitLocation {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  organisationUnitId String
+  locationId         String
+  priority           Int       @default(100)
+  validFrom          DateTime?
+  validTo            DateTime?
+  createdAt          DateTime  @default(now())
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  organisationUnit OrganisationUnit @relation(fields: [organisationUnitId], references: [id], onDelete: Cascade)
+  location         Location         @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, organisationUnitId, locationId])
+  @@index([tenantId, organisationUnitId])
+  @@index([tenantId, locationId])
+}
+
+model AcademicPeriod {
+  id        String             @id @default(uuid())
+  tenantId  String
+  parentId  String?
+  type      AcademicPeriodType
+  name      String
+  code      String?
+  startDate DateTime
+  endDate   DateTime
+  active    Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  parent   AcademicPeriod?  @relation("AcademicPeriodHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children AcademicPeriod[] @relation("AcademicPeriodHierarchy")
+
+  planningScopes PlanningScope[]
+
+ studentCourseRequirements StudentCourseRequirement[]
+ teachingGroups            TeachingGroup[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, parentId])
+  @@index([tenantId, startDate, endDate])
+}
+
+model PlanningScope {
+  id               String              @id @default(uuid())
+  tenantId         String
+  academicPeriodId String?
+  name             String
+  code             String?
+  status           PlanningScopeStatus @default(DRAFT)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  academicPeriod AcademicPeriod? @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+
+  organisationUnits PlanningScopeOrganisationUnit[]
+  locations         PlanningScopeLocation[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@index([tenantId, academicPeriodId])
+}
+
+model PlanningScopeOrganisationUnit {
+  id                 String @id @default(uuid())
+  tenantId           String
+  planningScopeId    String
+  organisationUnitId String
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planningScope    PlanningScope    @relation(fields: [planningScopeId], references: [id], onDelete: Cascade)
+  organisationUnit OrganisationUnit @relation(fields: [organisationUnitId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, planningScopeId, organisationUnitId])
+  @@index([tenantId, planningScopeId])
+}
+
+model PlanningScopeLocation {
+  id              String @id @default(uuid())
+  tenantId        String
+  planningScopeId String
+  locationId      String
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planningScope PlanningScope @relation(fields: [planningScopeId], references: [id], onDelete: Cascade)
+  location      Location      @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, planningScopeId, locationId])
+  @@index([tenantId, planningScopeId])
+}
+
+model EventLog {
+  id          String    @id @default(uuid())
+  tenantId    String
+  eventType   EventType
+  entityType  String
+  entityId    String?
+  actorId     String?
+  description String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, actorId])
+}
+
+
+model Student {
+ id                        String       @id @default(uuid())
+ tenantId                  String
+ externalId                String?
+ sourceSystem              String?
+ firstName                 String
+ lastName                  String
+ status                    PersonStatus @default(ACTIVE)
+ primaryOrganisationUnitId String?
+ primaryLocationId         String?
+ activeFrom                DateTime?
+ activeTo                  DateTime?
+ createdAt                 DateTime     @default(now())
+ updatedAt                 DateTime     @updatedAt
+
+ tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ primaryOrganisationUnit OrganisationUnit? @relation("StudentPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
+ primaryLocation         Location?         @relation("StudentPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
+
+ courseRequirements StudentCourseRequirement[]
+ groupMemberships   TeachingGroupStudent[]
+
+ @@unique([tenantId, externalId, sourceSystem])
+ @@index([tenantId, status])
+ @@index([tenantId, lastName, firstName])
+ @@index([tenantId, primaryOrganisationUnitId])
+ @@index([tenantId, primaryLocationId])
+}
+
+model Instructor {
+ id                        String       @id @default(uuid())
+ tenantId                  String
+ externalId                String?
+ sourceSystem              String?
+ firstName                 String
+ lastName                  String
+ status                    PersonStatus @default(ACTIVE)
+ employmentPercentage      Decimal?     @db.Decimal(5, 2)
+ maxTeachingMinutesPerWeek Int?
+ primaryOrganisationUnitId String?
+ primaryLocationId         String?
+ activeFrom                DateTime?
+ activeTo                  DateTime?
+ createdAt                 DateTime     @default(now())
+ updatedAt                 DateTime     @updatedAt
+
+ tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ primaryOrganisationUnit OrganisationUnit? @relation("InstructorPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
+ primaryLocation         Location?         @relation("InstructorPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
+
+ courses   InstructorCourse[]
+ locations InstructorLocation[]
+
+ @@unique([tenantId, externalId, sourceSystem])
+ @@index([tenantId, status])
+ @@index([tenantId, lastName, firstName])
+ @@index([tenantId, primaryOrganisationUnitId])
+ @@index([tenantId, primaryLocationId])
+}
+
+model Course {
+ id                         String             @id @default(uuid())
+ tenantId                   String
+ externalId                 String?
+ sourceSystem               String?
+ code                       String?
+ name                       String
+ deliveryMode               CourseDeliveryMode @default(IN_PERSON)
+ standardGroupSize          Int?
+ maxGroupSize               Int?
+ minSessionMinutes          Int?
+ preferredSessionMinutes    Int?
+ maxSessionMinutes          Int?
+ allowDoubleSession         Boolean            @default(false)
+ maxSessionsPerDay          Int?
+ active                     Boolean            @default(true)
+ createdAt                  DateTime           @default(now())
+ updatedAt                  DateTime           @updatedAt
+
+ tenant       Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ instructors  InstructorCourse[]
+ requirements StudentCourseRequirement[]
+ groups       TeachingGroup[]
+
+ @@unique([tenantId, code])
+ @@unique([tenantId, externalId, sourceSystem])
+ @@index([tenantId, active])
+ @@index([tenantId, name])
+}
+
+model InstructorCourse {
+ id                 String             @id @default(uuid())
+ tenantId           String
+ instructorId       String
+ courseId           String
+ qualificationLevel QualificationLevel @default(PRIMARY)
+ priority           Int                @default(100)
+ active             Boolean            @default(true)
+ validFrom          DateTime?
+ validTo            DateTime?
+ createdAt          DateTime           @default(now())
+ updatedAt          DateTime           @updatedAt
+
+ tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+ course     Course     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+ @@unique([tenantId, instructorId, courseId])
+ @@index([tenantId, instructorId])
+ @@index([tenantId, courseId])
+}
+
+model InstructorLocation {
+ id           String   @id @default(uuid())
+ tenantId     String
+ instructorId String
+ locationId   String
+ allowed      Boolean  @default(true)
+ priority     Int      @default(100)
+ validFrom    DateTime?
+ validTo      DateTime?
+ createdAt    DateTime @default(now())
+ updatedAt    DateTime @updatedAt
+
+ tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+ location   Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+ @@unique([tenantId, instructorId, locationId])
+ @@index([tenantId, instructorId])
+ @@index([tenantId, locationId])
+}
+
+model StudentCourseRequirement {
+ id               String              @id @default(uuid())
+ tenantId         String
+ studentId        String
+ courseId         String
+ academicPeriodId String
+ requiredAmount   Int
+ unit             RequirementUnit     @default(MINUTES)
+ priority         RequirementPriority @default(NORMAL)
+ active           Boolean             @default(true)
+ createdAt        DateTime            @default(now())
+ updatedAt        DateTime            @updatedAt
+
+ tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ student        Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+ course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
+ academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+
+ @@unique([tenantId, studentId, courseId, academicPeriodId])
+ @@index([tenantId, studentId])
+ @@index([tenantId, courseId])
+ @@index([tenantId, academicPeriodId])
+}
+
+model TeachingGroup {
+ id               String              @id @default(uuid())
+ tenantId         String
+ academicPeriodId String
+ courseId         String
+ name             String
+ code             String?
+ minStudents      Int?
+ maxStudents      Int?
+ status           TeachingGroupStatus @default(DRAFT)
+ createdAt        DateTime            @default(now())
+ updatedAt        DateTime            @updatedAt
+
+ tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+ course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
+
+ students TeachingGroupStudent[]
+
+ @@unique([tenantId, code])
+ @@index([tenantId, academicPeriodId])
+ @@index([tenantId, courseId])
+ @@index([tenantId, status])
+}
+
+model TeachingGroupStudent {
+ id              String   @id @default(uuid())
+ tenantId        String
+ teachingGroupId String
+ studentId       String
+ validFrom       DateTime?
+ validTo         DateTime?
+ createdAt       DateTime @default(now())
+
+ tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+ teachingGroup TeachingGroup @relation(fields: [teachingGroupId], references: [id], onDelete: Cascade)
+ student       Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+ @@unique([tenantId, teachingGroupId, studentId])
+ @@index([tenantId, teachingGroupId])
+ @@index([tenantId, studentId])
 }
