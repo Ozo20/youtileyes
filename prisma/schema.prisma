@@ -147,6 +147,15 @@ model Tenant {
   loadProfiles  LoadProfile[]
   planningRules PlanningRule[]
 
+  plans                      Plan[]
+  planScenarios              PlanScenario[]
+  sessions                   Session[]
+  sessionInstructors         SessionInstructor[]
+  sessionStudents            SessionStudent[]
+  scenarioSessions           ScenarioSession[]
+  scenarioSessionInstructors ScenarioSessionInstructor[]
+  scenarioSessionStudents    ScenarioSessionStudent[]
+
   @@index([status])
 }
 
@@ -271,6 +280,9 @@ model Room {
   availabilities     RoomAvailability[]
   planningExceptions PlanningException[]
 
+  sessions         Session[]
+  scenarioSessions ScenarioSession[]
+
   @@unique([tenantId, code])
   @@index([tenantId, locationId])
   @@index([tenantId, active])
@@ -319,6 +331,8 @@ model AcademicPeriod {
 
   calendarDays CalendarDay[]
 
+  plans Plan[]
+
   @@unique([tenantId, code])
   @@index([tenantId, parentId])
   @@index([tenantId, startDate, endDate])
@@ -339,6 +353,8 @@ model PlanningScope {
 
   organisationUnits PlanningScopeOrganisationUnit[]
   locations         PlanningScopeLocation[]
+
+  plans Plan[]
 
   @@unique([tenantId, code])
   @@index([tenantId, status])
@@ -420,6 +436,9 @@ model Student {
   loadProfile   LoadProfile?   @relation(fields: [loadProfileId], references: [id], onDelete: Restrict)
   planningRules PlanningRule[]
 
+  sessionLinks         SessionStudent[]
+  scenarioSessionLinks ScenarioSessionStudent[]
+
   @@unique([tenantId, externalId, sourceSystem])
   @@index([tenantId, status])
   @@index([tenantId, lastName, firstName])
@@ -457,6 +476,9 @@ model Instructor {
   loadProfileId String?
   loadProfile   LoadProfile?   @relation(fields: [loadProfileId], references: [id], onDelete: Restrict)
   planningRules PlanningRule[]
+
+  sessionLinks         SessionInstructor[]
+  scenarioSessionLinks ScenarioSessionInstructor[]
 
   @@unique([tenantId, externalId, sourceSystem])
   @@index([tenantId, status])
@@ -584,6 +606,9 @@ model TeachingGroup {
   students TeachingGroupStudent[]
 
   planningRules PlanningRule[]
+
+  sessions         Session[]
+  scenarioSessions ScenarioSession[]
 
   @@unique([tenantId, code])
   @@index([tenantId, academicPeriodId])
@@ -881,4 +906,205 @@ model PlanningRule {
   @@index([tenantId, teachingGroupId])
   @@index([tenantId, studentId])
   @@index([tenantId, instructorId])
+}
+
+enum PlanStatus {
+  DRAFT
+  GENERATED
+  REVIEWED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ScenarioStatus {
+  DRAFT
+  GENERATING
+  GENERATED
+  FAILED
+  ACCEPTED
+  REJECTED
+}
+
+enum SessionStatus {
+  PLANNED
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum SessionOrigin {
+  MANUAL
+  IMPORTED
+  GENERATED
+  REPLANNED
+}
+
+model Plan {
+  id               String     @id @default(uuid())
+  tenantId         String
+  planningScopeId  String
+  academicPeriodId String
+  name             String
+  version          Int
+  status           PlanStatus @default(DRAFT)
+  basedOnPlanId    String?
+  publishedAt      DateTime?
+  publishedById    String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planningScope  PlanningScope  @relation(fields: [planningScopeId], references: [id], onDelete: Restrict)
+  academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+
+  basedOnPlan  Plan?  @relation("PlanVersionHistory", fields: [basedOnPlanId], references: [id], onDelete: Restrict)
+  derivedPlans Plan[] @relation("PlanVersionHistory")
+
+  scenarios PlanScenario[]
+  sessions  Session[]
+
+  @@unique([tenantId, planningScopeId, version])
+  @@index([tenantId, status])
+  @@index([tenantId, planningScopeId])
+  @@index([tenantId, academicPeriodId])
+}
+
+model PlanScenario {
+  id               String         @id @default(uuid())
+  tenantId         String
+  planId           String
+  name             String
+  status           ScenarioStatus @default(DRAFT)
+  solverScore      Float?
+  objectiveSummary Json?
+  generationConfig Json?
+  generatedAt      DateTime?
+  failureMessage   String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  sessions ScenarioSession[]
+
+  @@index([tenantId, planId])
+  @@index([tenantId, status])
+}
+
+model Session {
+  id              String        @id @default(uuid())
+  tenantId        String
+  planId          String
+  teachingGroupId String
+  roomId          String?
+  date            DateTime      @db.Date
+  startMinute     Int
+  endMinute       Int
+  status          SessionStatus @default(PLANNED)
+  origin          SessionOrigin @default(MANUAL)
+  locked          Boolean       @default(false)
+  changeReason    String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan          Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
+  teachingGroup TeachingGroup @relation(fields: [teachingGroupId], references: [id], onDelete: Restrict)
+  room          Room?         @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  instructors SessionInstructor[]
+  students    SessionStudent[]
+
+  scenarioCopies ScenarioSession[]
+
+  @@index([tenantId, planId, date])
+  @@index([tenantId, teachingGroupId])
+  @@index([tenantId, roomId, date])
+}
+
+model SessionInstructor {
+  id           String @id @default(uuid())
+  tenantId     String
+  sessionId    String
+  instructorId String
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  session    Session    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, sessionId, instructorId])
+  @@index([tenantId, instructorId])
+}
+
+model SessionStudent {
+  id        String @id @default(uuid())
+  tenantId  String
+  sessionId String
+  studentId String
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, sessionId, studentId])
+  @@index([tenantId, studentId])
+}
+
+model ScenarioSession {
+  id              String        @id @default(uuid())
+  tenantId        String
+  planScenarioId  String
+  sourceSessionId String?
+  teachingGroupId String
+  roomId          String?
+  date            DateTime      @db.Date
+  startMinute     Int
+  endMinute       Int
+  origin          SessionOrigin @default(GENERATED)
+  locked          Boolean       @default(false)
+  changeReason    String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  planScenario  PlanScenario  @relation(fields: [planScenarioId], references: [id], onDelete: Cascade)
+  sourceSession Session?      @relation(fields: [sourceSessionId], references: [id], onDelete: SetNull)
+  teachingGroup TeachingGroup @relation(fields: [teachingGroupId], references: [id], onDelete: Restrict)
+  room          Room?         @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  instructors ScenarioSessionInstructor[]
+  students    ScenarioSessionStudent[]
+
+  @@index([tenantId, planScenarioId, date])
+  @@index([tenantId, sourceSessionId])
+  @@index([tenantId, teachingGroupId])
+}
+
+model ScenarioSessionInstructor {
+  id                String @id @default(uuid())
+  tenantId          String
+  scenarioSessionId String
+  instructorId      String
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  scenarioSession ScenarioSession @relation(fields: [scenarioSessionId], references: [id], onDelete: Cascade)
+  instructor      Instructor      @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, scenarioSessionId, instructorId])
+  @@index([tenantId, instructorId])
+}
+
+model ScenarioSessionStudent {
+  id                String @id @default(uuid())
+  tenantId          String
+  scenarioSessionId String
+  studentId         String
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  scenarioSession ScenarioSession @relation(fields: [scenarioSessionId], references: [id], onDelete: Cascade)
+  student         Student         @relation(fields: [studentId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, scenarioSessionId, studentId])
+  @@index([tenantId, studentId])
 }
