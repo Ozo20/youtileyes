@@ -144,6 +144,9 @@ model Tenant {
   roomAvailabilities       RoomAvailability[]
   planningExceptions       PlanningException[]
 
+  loadProfiles  LoadProfile[]
+  planningRules PlanningRule[]
+
   @@index([status])
 }
 
@@ -171,6 +174,8 @@ model OrganisationUnit {
   primaryInstructors Instructor[] @relation("InstructorPrimaryOrganisation")
 
   planningExceptions PlanningException[]
+
+  planningRules PlanningRule[]
 
   @@unique([tenantId, code])
   @@index([tenantId, parentId])
@@ -215,6 +220,8 @@ model Location {
   instructorLocations InstructorLocation[]
 
   planningExceptions PlanningException[]
+
+  planningRules PlanningRule[]
 
   @@unique([tenantId, code])
   @@index([tenantId, parentId])
@@ -409,6 +416,10 @@ model Student {
   availabilities     StudentAvailability[]
   planningExceptions PlanningException[]
 
+  loadProfileId String?
+  loadProfile   LoadProfile?   @relation(fields: [loadProfileId], references: [id], onDelete: Restrict)
+  planningRules PlanningRule[]
+
   @@unique([tenantId, externalId, sourceSystem])
   @@index([tenantId, status])
   @@index([tenantId, lastName, firstName])
@@ -443,6 +454,10 @@ model Instructor {
   availabilities     InstructorAvailability[]
   planningExceptions PlanningException[]
 
+  loadProfileId String?
+  loadProfile   LoadProfile?   @relation(fields: [loadProfileId], references: [id], onDelete: Restrict)
+  planningRules PlanningRule[]
+
   @@unique([tenantId, externalId, sourceSystem])
   @@index([tenantId, status])
   @@index([tenantId, lastName, firstName])
@@ -473,6 +488,8 @@ model Course {
   instructors  InstructorCourse[]
   requirements StudentCourseRequirement[]
   groups       TeachingGroup[]
+
+  planningRules PlanningRule[]
 
   @@unique([tenantId, code])
   @@unique([tenantId, externalId, sourceSystem])
@@ -565,6 +582,8 @@ model TeachingGroup {
   course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
 
   students TeachingGroupStudent[]
+
+  planningRules PlanningRule[]
 
   @@unique([tenantId, code])
   @@index([tenantId, academicPeriodId])
@@ -753,4 +772,113 @@ model PlanningException {
   @@index([tenantId, studentId])
   @@index([tenantId, roomId])
   @@index([tenantId, locationId])
+}
+
+enum PlanningRuleType {
+  MAX_TEACHING_MINUTES_PER_DAY
+  MAX_CONTINUOUS_TEACHING_MINUTES
+  MIN_BREAK_MINUTES
+  MIN_LUNCH_MINUTES
+  MAX_SESSIONS_PER_DAY
+  MIN_REAL_BREAK_MINUTES
+  MIN_BREAK_AFTER_SESSION
+  MAX_COURSE_SESSIONS_PER_DAY
+  PREFERRED_SESSION_LENGTH
+  REQUIRE_DOUBLE_SESSION
+  ALLOW_DOUBLE_SESSION
+  LOCATION_TRAVEL_BUFFER
+  OTHER
+}
+
+enum PlanningRuleScopeType {
+  TENANT
+  ORGANISATION_UNIT
+  LOCATION
+  COURSE
+  TEACHING_GROUP
+  STUDENT
+  INSTRUCTOR
+}
+
+enum PlanningRuleConstraintType {
+  HARD
+  SOFT
+}
+
+enum PlanningRuleValueUnit {
+  MINUTES
+  COUNT
+  BOOLEAN
+  PERCENT
+  SCORE
+  NONE
+}
+
+model LoadProfile {
+  id                           String   @id @default(uuid())
+  tenantId                     String
+  name                         String
+  code                         String?
+  maxTeachingMinutesPerDay     Int?
+  maxContinuousTeachingMinutes Int?
+  minBreakMinutes              Int?
+  minLunchMinutes              Int?
+  maxSessionsPerDay            Int?
+  minRealBreakMinutes          Int?
+  travelConsumesBreakTime      Boolean  @default(true)
+  active                       Boolean  @default(true)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  students    Student[]
+  instructors Instructor[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, active])
+}
+
+model PlanningRule {
+  id                 String                     @id @default(uuid())
+  tenantId           String
+  name               String
+  description        String?
+  ruleType           PlanningRuleType
+  scopeType          PlanningRuleScopeType
+  constraintType     PlanningRuleConstraintType @default(SOFT)
+  valueInt           Int?
+  valueBoolean       Boolean?
+  valueText          String?
+  valueUnit          PlanningRuleValueUnit      @default(NONE)
+  weight             Int                        @default(100)
+  active             Boolean                    @default(true)
+  organisationUnitId String?
+  locationId         String?
+  courseId           String?
+  teachingGroupId    String?
+  studentId          String?
+  instructorId       String?
+  validFrom          DateTime?
+  validTo            DateTime?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  organisationUnit OrganisationUnit? @relation(fields: [organisationUnitId], references: [id], onDelete: Restrict)
+  location         Location?         @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  course           Course?           @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  teachingGroup    TeachingGroup?    @relation(fields: [teachingGroupId], references: [id], onDelete: Restrict)
+  student          Student?          @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  instructor       Instructor?       @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, ruleType])
+  @@index([tenantId, scopeType])
+  @@index([tenantId, active])
+  @@index([tenantId, organisationUnitId])
+  @@index([tenantId, locationId])
+  @@index([tenantId, courseId])
+  @@index([tenantId, teachingGroupId])
+  @@index([tenantId, studentId])
+  @@index([tenantId, instructorId])
 }
