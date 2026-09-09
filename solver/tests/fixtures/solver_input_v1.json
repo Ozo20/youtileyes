@@ -1,0 +1,135 @@
+{
+ "schemaVersion": "1.0",
+ "tenantId": "tenant-demo",
+ "planScenarioId": "scenario-demo-001",
+ "date": "2026-09-10",
+ "startTimes": [
+   495,
+   510,
+   525,
+   540,
+   555,
+   570,
+   585,
+   600,
+   615,
+   630,
+   645,
+   660,
+   675,
+   690,
+   705,
+   720,
+   735,
+   750,
+   765,
+   780,
+   795,
+   810
+ ],
+ "instructors": [
+   {
+     "id": "T1",
+     "name": "Hansen",
+     "courseIds": ["MAT", "FYS"]
+   },
+   {
+     "id": "T2",
+     "name": "Olsen",
+     "courseIds": ["ENG", "NOR"]
+   }
+ ],
+ "rooms": [
+   {
+     "id": "A10",
+     "name": "A10",
+     "capacity": 10
+   },
+   {
+     "id": "A11",
+     "name": "A11",
+     "capacity": 10
+   },
+   {
+     "id": "B14",
+     "name": "B14",
+     "capacity": 10
+   }
+ ],
+ "teachingGroups": [
+   {
+     "id": "G1",
+     "courseId": "MAT",
+     "studentIds": ["S1", "S2"],
+     "durationMinutes": 90,
+     "allowedRoomIds": ["A10"]
+   },
+   {
+     "id": "G2",
+     "courseId": "ENG",
+     "studentIds": ["S1", "S3"],
+     "durationMinutes": 45,
+     "allowedRoomIds": ["A11", "B14"]
+   },
+   {
+     "id": "G3",
+     "courseId": "FYS",
+     "studentIds": ["S1", "S4"],
+     "durationMinutes": 45,
+     "allowedRoomIds": ["A10", "B14"]
+   },
+   {
+     "id": "G4",
+     "courseId": "NOR",
+     "studentIds": ["S1", "S5"],
+     "durationMinutes": 45,
+     "allowedRoomIds": ["A11"]
+   }
+ ],
+ "travel": [
+   {
+     "fromRoomId": "A10",
+     "toRoomId": "A11",
+     "minutes": 3
+   },
+   {
+     "fromRoomId": "A11",
+     "toRoomId": "A10",
+     "minutes": 3
+   },
+   {
+     "fromRoomId": "A10",
+     "toRoomId": "B14",
+     "minutes": 12
+   },
+   {
+     "fromRoomId": "B14",
+     "toRoomId": "A10",
+     "minutes": 12
+   },
+   {
+     "fromRoomId": "A11",
+     "toRoomId": "B14",
+     "minutes": 12
+   },
+   {
+     "fromRoomId": "B14",
+     "toRoomId": "A11",
+     "minutes": 12
+   }
+ ],
+ "studentLoadProfile": {
+   "maxTeachingMinutesPerDay": 270,
+   "maxContinuousTeachingMinutes": 120,
+   "minBreakMinutes": 15,
+   "minBreakAfterDoubleMinutes": 20,
+   "maxSessionsPerDay": 4,
+   "minLunchMinutes": 30,
+   "lunchWindowStart": 660,
+   "lunchWindowEnd": 810,
+   "travelConsumesBreakTime": true
+ },
+ "metadata": {
+   "source": "integration-test"
+ }
+}
