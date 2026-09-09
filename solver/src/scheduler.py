@@ -271,13 +271,244 @@ def solve_schedule(
                <= student_profile.max_teaching_minutes_per_day
            )
 
-   # Prefer earlier sessions.
+   students = {
+       student
+       for group in groups
+       for student in group.students
+   }
+
+   # Hard constraint: maximum continuous teaching.
+   #
+   # For each student, forbid candidate combinations that would create
+   # a teaching chain longer than the configured maximum without a
+   # sufficient break between sessions.
+   if student_profile.max_continuous_teaching_minutes is not None:
+       for student in students:
+           relevant_indices = [
+               index
+               for index, candidate in enumerate(candidates)
+               if student in group_by_id[candidate.group_id].students
+           ]
+
+           for left_pos, left_index in enumerate(relevant_indices):
+               left = candidates[left_index]
+
+               for right_index in relevant_indices[left_pos + 1:]:
+                   right = candidates[right_index]
+
+                   if left.group_id == right.group_id:
+                       continue
+
+                   ordered = sorted(
+                       (left, right),
+                       key=lambda candidate: candidate.start,
+                   )
+                   first, second = ordered
+
+                   if overlaps(first, second):
+                       continue
+
+                   gap = real_break_minutes(
+                       first,
+                       second,
+                       travel_matrix,
+                       student_profile.travel_consumes_break_time,
+                   )
+
+                   # If there is no meaningful break, the sessions belong
+                   # to the same continuous teaching block.
+                   if gap < student_profile.min_break_minutes:
+                       continuous_span = second.end - first.start
+
+                       if (
+                           continuous_span
+                            > student_profile.max_continuous_teaching_minutes
+                       ):
+                           model.add(
+                               variables[left_index]
+                               + variables[right_index]
+                               <= 1
+                           )
+
+   # Hard constraint: lunch opportunity.
+   #
+   # If lunch is configured, every student must retain at least one
+   # uninterrupted lunch interval inside the configured lunch window.
+   if (
+       student_profile.min_lunch_minutes is not None
+       and student_profile.lunch_window_start is not None
+       and student_profile.lunch_window_end is not None
+   ):
+       lunch_start = student_profile.lunch_window_start
+       lunch_end = student_profile.lunch_window_end
+       lunch_length = student_profile.min_lunch_minutes
+
+       possible_lunch_starts = list(
+           range(
+               lunch_start,
+               lunch_end - lunch_length + 1,
+               15,
+           )
+       )
+
+       for student in students:
+           lunch_options = []
+
+           for option_start in possible_lunch_starts:
+               option_end = option_start + lunch_length
+               lunch_var = model.new_bool_var(
+                   f"lunch_{student}_{option_start}"
+               )
+               lunch_options.append(lunch_var)
+
+               conflicting_indices = []
+
+               for index, candidate in enumerate(candidates):
+                   group = group_by_id[candidate.group_id]
+
+                   if student not in group.students:
+                       continue
+
+                   if (
+                       candidate.start < option_end
+                       and option_start < candidate.end
+                   ):
+                       conflicting_indices.append(index)
+
+               for index in conflicting_indices:
+                   model.add(
+                       variables[index] + lunch_var <= 1
+                   )
+
+           if lunch_options:
+               model.add(sum(lunch_options) >= 1)
+
+   # Soft objectives.
+   objective_terms = []
+
    first_start = min(start_times)
 
-   objective_terms = [
-       (candidate.start - first_start) * variables[index]
-       for index, candidate in enumerate(candidates)
-   ]
+   # Mild preference for earlier sessions.
+   for index, candidate in enumerate(candidates):
+       objective_terms.append(
+           (candidate.start - first_start)
+           * variables[index]
+       )
+
+   # Penalise room changes for students.
+   #
+   # Pairwise penalty variables are only active if both assignments
+   # are selected.
+   room_change_penalty = 20
+
+   for student in students:
+       relevant_indices = [
+           index
+           for index, candidate in enumerate(candidates)
+           if student in group_by_id[candidate.group_id].students
+       ]
+
+       for left_pos, left_index in enumerate(relevant_indices):
+           left = candidates[left_index]
+
+           for right_index in relevant_indices[left_pos + 1:]:
+               right = candidates[right_index]
+
+               if left.group_id == right.group_id:
+                   continue
+
+               if left.room_id == right.room_id:
+                   continue
+
+               pair_var = model.new_bool_var(
+                   f"room_change_"
+                   f"{student}_{left_index}_{right_index}"
+               )
+
+               model.add(
+                   pair_var <= variables[left_index]
+               )
+               model.add(
+                   pair_var <= variables[right_index]
+               )
+               model.add(
+                   pair_var >= variables[left_index]
+                   + variables[right_index]
+                   - 1
+               )
+
+               objective_terms.append(
+                   room_change_penalty * pair_var
+               )
+
+   # Penalise long idle gaps for students.
+   #
+   # This is deliberately a soft criterion. Real breaks remain hard
+   # constraints; excess waiting is simply discouraged.
+   idle_penalty_per_minute = 1
+
+   for student in students:
+       relevant_indices = [
+           index
+           for index, candidate in enumerate(candidates)
+           if student in group_by_id[candidate.group_id].students
+       ]
+
+       for left_pos, left_index in enumerate(relevant_indices):
+           left = candidates[left_index]
+
+           for right_index in relevant_indices[left_pos + 1:]:
+               right = candidates[right_index]
+
+               if left.group_id == right.group_id:
+                   continue
+
+               if left.end <= right.start:
+                   first, second = left, right
+               elif right.end <= left.start:
+                   first, second = right, left
+               else:
+                   continue
+
+               gap = real_break_minutes(
+                   first,
+                   second,
+                   travel_matrix,
+                   student_profile.travel_consumes_break_time,
+               )
+
+               # Do not penalise the necessary break itself.
+               excess_idle = max(
+                   0,
+                   gap - student_profile.min_break_minutes,
+               )
+
+               if excess_idle == 0:
+                   continue
+
+               pair_var = model.new_bool_var(
+                   f"idle_"
+                   f"{student}_{left_index}_{right_index}"
+               )
+
+               model.add(
+                   pair_var <= variables[left_index]
+               )
+               model.add(
+                   pair_var <= variables[right_index]
+               )
+               model.add(
+                   pair_var
+                   >= variables[left_index]
+                   + variables[right_index]
+                   - 1
+               )
+
+               objective_terms.append(
+                   idle_penalty_per_minute
+                   * excess_idle
+                   * pair_var
+               )
 
    model.minimize(sum(objective_terms))
 
