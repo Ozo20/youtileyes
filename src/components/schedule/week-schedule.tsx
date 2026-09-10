@@ -1,5 +1,9 @@
+import Link from "next/link";
+
 type WeekSession = {
  id: string;
+ href: string;
+ selected: boolean;
  dateKey: string;
  startMinute: number;
  endMinute: number;
@@ -23,7 +27,6 @@ type WeekScheduleProps = {
 function displayTime(minutes: number) {
  const hours = Math.floor(minutes / 60);
  const mins = minutes % 60;
-
  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
 }
 
@@ -31,9 +34,7 @@ export function WeekSchedule({ days, sessions }: WeekScheduleProps) {
  return (
    <div className="week-schedule">
      {days.map((day) => {
-       const daySessions = sessions.filter(
-         (session) => session.dateKey === day.key,
-       );
+       const daySessions = sessions.filter((session) => session.dateKey === day.key);
 
        return (
          <section key={day.key} className="week-day">
@@ -47,23 +48,19 @@ export function WeekSchedule({ days, sessions }: WeekScheduleProps) {
                <div className="week-day-empty">No sessions</div>
              ) : (
                daySessions.map((session) => (
-                 <article key={session.id} className="week-session-card">
-                   <div className="week-session-time">
-                     {displayTime(session.startMinute)}
-                     {" – "}
-                     {displayTime(session.endMinute)}
-                   </div>
+                 <Link key={session.id} href={session.href} className="week-session-link">
+                   <article className="week-session-card" data-selected={session.selected}>
+                     <div className="week-session-time">
+                       {displayTime(session.startMinute)}
+                       {" – "}
+                       {displayTime(session.endMinute)}
+                     </div>
 
-                   <strong>
-                     {session.courseCode ?? session.courseName}
-                   </strong>
-
-                   <span>
-                     {session.instructorName ?? "No instructor"}
-                   </span>
-
-                   <span>{session.roomName ?? "No room"}</span>
-                 </article>
+                     <strong>{session.courseCode ?? session.courseName}</strong>
+                     <span>{session.instructorName ?? "No instructor"}</span>
+                     <span>{session.roomName ?? "No room"}</span>
+                   </article>
+                 </Link>
                ))
              )}
            </div>
