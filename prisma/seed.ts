@@ -1,5 +1,15 @@
 import { prisma } from "../src/lib/prisma";
 
+function dateOnlyIso(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  const result = new Date(date);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}
+
 async function main() {
   const tenant = await prisma.tenant.upsert({
     where: { code: "DEMO" },
@@ -28,6 +38,38 @@ async function main() {
       endDate: new Date("2026-12-18T00:00:00.000Z"),
     },
   });
+
+  // Materialise the semester calendar. Weekends are stored explicitly as non-teaching
+  // days so later planning code does not have to infer them from the weekday alone.
+  for (
+    let date = new Date("2026-08-17T00:00:00.000Z");
+    date <= new Date("2026-12-18T00:00:00.000Z");
+    date = addUtcDays(date, 1)
+  ) {
+    const weekday = date.getUTCDay();
+    const teachingAllowed = weekday >= 1 && weekday <= 5;
+
+    await prisma.calendarDay.upsert({
+      where: {
+        tenantId_date: {
+          tenantId: tenant.id,
+          date: new Date(`${dateOnlyIso(date)}T00:00:00.000Z`),
+        },
+      },
+      update: {
+        academicPeriodId: academicPeriod.id,
+        dayType: teachingAllowed ? "TEACHING" : "CLOSED",
+        teachingAllowed,
+      },
+      create: {
+        tenantId: tenant.id,
+        academicPeriodId: academicPeriod.id,
+        date: new Date(`${dateOnlyIso(date)}T00:00:00.000Z`),
+        dayType: teachingAllowed ? "TEACHING" : "CLOSED",
+        teachingAllowed,
+      },
+    });
+  }
 
   const organisation = await prisma.organisationUnit.upsert({
     where: {
@@ -243,20 +285,61 @@ async function main() {
     ),
   );
 
-  const studentByExternalId = Object.fromEntries(
-    students.map((student) => [student.externalId!, student]),
-  );
+  const cohort = await prisma.studentCohort.upsert({
+    where: {
+      tenantId_code: {
+        tenantId: tenant.id,
+        code: "ST2A",
+      },
+    },
+    update: {
+      academicPeriodId: academicPeriod.id,
+      organisationUnitId: organisation.id,
+      type: "CLASS",
+      name: "ST2A",
+      active: true,
+    },
+    create: {
+      tenantId: tenant.id,
+      academicPeriodId: academicPeriod.id,
+      organisationUnitId: organisation.id,
+      type: "CLASS",
+      name: "ST2A",
+      code: "ST2A",
+    },
+  });
 
+  for (const student of students) {
+    await prisma.studentCohortMember.upsert({
+      where: {
+        tenantId_studentCohortId_studentId: {
+          tenantId: tenant.id,
+          studentCohortId: cohort.id,
+          studentId: student.id,
+        },
+      },
+      update: {},
+      create: {
+        tenantId: tenant.id,
+        studentCohortId: cohort.id,
+        studentId: student.id,
+      },
+    });
+  }
+
+  // These are full-class teaching groups: every student in ST2A receives the
+  // lesson together. The explicit TeachingGroupStudent rows are materialised
+  // for solver compatibility, while StudentCohort remains the class source.
   const groupDefinitions = [
-    ["G1", "MAT", ["S1", "S2"]],
-    ["G2", "ENG", ["S1", "S3"]],
-    ["G3", "FYS", ["S1", "S4"]],
-    ["G4", "NOR", ["S1", "S5"]],
+    ["G1", "MAT", 200],
+    ["G2", "ENG", 180],
+    ["G3", "FYS", 180],
+    ["G4", "NOR", 180],
   ] as const;
 
   const teachingGroupByCode: Record<string, { id: string }> = {};
 
-  for (const [code, courseCode, studentIds] of groupDefinitions) {
+  for (const [code, courseCode, schedulingPriority] of groupDefinitions) {
     const group = await prisma.teachingGroup.upsert({
       where: {
         tenantId_code: {
@@ -267,7 +350,10 @@ async function main() {
       update: {
         academicPeriodId: academicPeriod.id,
         courseId: courseByCode[courseCode].id,
-        name: code,
+        studentCohortId: cohort.id,
+        membershipMode: "FULL_COHORT",
+        schedulingPriority,
+        name: `${cohort.code} ${courseCode}`,
         status: "ACTIVE",
         maxStudents: 10,
       },
@@ -275,7 +361,10 @@ async function main() {
         tenantId: tenant.id,
         academicPeriodId: academicPeriod.id,
         courseId: courseByCode[courseCode].id,
-        name: code,
+        studentCohortId: cohort.id,
+        membershipMode: "FULL_COHORT",
+        schedulingPriority,
+        name: `${cohort.code} ${courseCode}`,
         code,
         status: "ACTIVE",
         maxStudents: 10,
@@ -284,23 +373,104 @@ async function main() {
 
     teachingGroupByCode[code] = group;
 
-    for (const studentExternalId of studentIds) {
-      await prisma.teachingGroupStudent.upsert({
-        where: {
-          tenantId_teachingGroupId_studentId: {
-            tenantId: tenant.id,
-            teachingGroupId: group.id,
-            studentId: studentByExternalId[studentExternalId].id,
-          },
-        },
-        update: {},
-        create: {
+    // FULL_COHORT membership is deterministic: remove stale rows from earlier
+    // demo seeds, then materialise the current cohort membership.
+    await prisma.teachingGroupStudent.deleteMany({
+      where: {
+        tenantId: tenant.id,
+        teachingGroupId: group.id,
+      },
+    });
+
+    for (const student of students) {
+      await prisma.teachingGroupStudent.create({
+        data: {
           tenantId: tenant.id,
           teachingGroupId: group.id,
-          studentId: studentByExternalId[studentExternalId].id,
+          studentId: student.id,
         },
       });
     }
+  }
+
+  const teachingRequirementDefinitions = [
+    ["G1", 1620, 90, 180],
+    ["G2", 810, 45, 90],
+    ["G3", 810, 45, 90],
+    ["G4", 810, 45, 90],
+  ] as const;
+
+  for (const [groupCode, totalMinutes, preferredWeeklyMinutes, maxWeeklyMinutes] of teachingRequirementDefinitions) {
+    await prisma.teachingRequirement.upsert({
+      where: {
+        tenantId_teachingGroupId_academicPeriodId: {
+          tenantId: tenant.id,
+          teachingGroupId: teachingGroupByCode[groupCode].id,
+          academicPeriodId: academicPeriod.id,
+        },
+      },
+      update: {
+        totalMinutes,
+        distributionMode: "EVEN_BY_TEACHING_CAPACITY",
+        preferredWeeklyMinutes,
+        maxWeeklyMinutes,
+        carryoverAllowed: true,
+        priority: "HIGH",
+        active: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        teachingGroupId: teachingGroupByCode[groupCode].id,
+        academicPeriodId: academicPeriod.id,
+        totalMinutes,
+        distributionMode: "EVEN_BY_TEACHING_CAPACITY",
+        preferredWeeklyMinutes,
+        maxWeeklyMinutes,
+        carryoverAllowed: true,
+        priority: "HIGH",
+      },
+    });
+  }
+
+  // A cohort-level activity day blocks ordinary teaching for the entire class.
+  // The weekly allocation step can then compensate through other days/weeks.
+  const activityStart = new Date("2026-09-10T06:00:00.000Z");
+  const activityEnd = new Date("2026-09-10T14:00:00.000Z");
+
+  const existingActivityDay = await prisma.planningException.findFirst({
+    where: {
+      tenantId: tenant.id,
+      studentCohortId: cohort.id,
+      type: "ACTIVITY_DAY",
+      name: "ST2A activity day",
+    },
+  });
+
+  if (existingActivityDay) {
+    await prisma.planningException.update({
+      where: { id: existingActivityDay.id },
+      data: {
+        status: "ACTIVE",
+        impactMode: "BLOCK",
+        startAt: activityStart,
+        endAt: activityEnd,
+        description: "Demo cohort activity. Ordinary teaching is blocked for ST2A.",
+      },
+    });
+  } else {
+    await prisma.planningException.create({
+      data: {
+        tenantId: tenant.id,
+        studentCohortId: cohort.id,
+        type: "ACTIVITY_DAY",
+        status: "ACTIVE",
+        impactMode: "BLOCK",
+        name: "ST2A activity day",
+        description: "Demo cohort activity. Ordinary teaching is blocked for ST2A.",
+        startAt: activityStart,
+        endAt: activityEnd,
+      },
+    });
   }
 
   const roomCoursePreferences = [
@@ -472,7 +642,14 @@ async function main() {
         version: 1,
       },
     },
-    update: {},
+    update: {
+      planningAsOfDate: new Date("2026-09-01T00:00:00.000Z"),
+      frozenThroughDate: new Date("2026-09-13T00:00:00.000Z"),
+      planningStartDate: new Date("2026-09-14T00:00:00.000Z"),
+      planningEndDate: new Date("2026-12-18T00:00:00.000Z"),
+      effectiveFrom: new Date("2026-09-14T00:00:00.000Z"),
+      effectiveTo: new Date("2026-12-18T00:00:00.000Z"),
+    },
     create: {
       tenantId: tenant.id,
       planningScopeId: planningScope.id,
@@ -480,8 +657,63 @@ async function main() {
       name: "Demo plan",
       version: 1,
       status: "DRAFT",
+      planningAsOfDate: new Date("2026-09-01T00:00:00.000Z"),
+      frozenThroughDate: new Date("2026-09-13T00:00:00.000Z"),
+      planningStartDate: new Date("2026-09-14T00:00:00.000Z"),
+      planningEndDate: new Date("2026-12-18T00:00:00.000Z"),
+      effectiveFrom: new Date("2026-09-14T00:00:00.000Z"),
+      effectiveTo: new Date("2026-12-18T00:00:00.000Z"),
     },
   });
+
+  const reviewWorkflow = await prisma.planReviewWorkflow.upsert({
+    where: {
+      tenantId_planId_name: {
+        tenantId: tenant.id,
+        planId: plan.id,
+        name: "Standard plan approval",
+      },
+    },
+    update: {},
+    create: {
+      tenantId: tenant.id,
+      planId: plan.id,
+      name: "Standard plan approval",
+      status: "DRAFT",
+    },
+  });
+
+  const reviewSteps = [
+    { stage: 1, position: 1, name: "Academic review", reviewerRole: "ACADEMIC_OWNER" },
+    { stage: 2, position: 1, name: "Final approval", reviewerRole: "RECTOR" },
+  ] as const;
+
+  for (const step of reviewSteps) {
+    await prisma.planReviewStep.upsert({
+      where: {
+        tenantId_workflowId_stage_position: {
+          tenantId: tenant.id,
+          workflowId: reviewWorkflow.id,
+          stage: step.stage,
+          position: step.position,
+        },
+      },
+      update: {
+        name: step.name,
+        reviewerRole: step.reviewerRole,
+        required: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        workflowId: reviewWorkflow.id,
+        stage: step.stage,
+        position: step.position,
+        name: step.name,
+        reviewerRole: step.reviewerRole,
+        required: true,
+      },
+    });
+  }
 
   const existingScenario = await prisma.planScenario.findFirst({
     where: {
@@ -508,6 +740,7 @@ async function main() {
     planningScopeId: planningScope.id,
     planId: plan.id,
     planScenarioId: scenario.id,
+    studentCohortId: cohort.id,
     roomIds: {
       A10: roomByCode.A10.id,
       A11: roomByCode.A11.id,

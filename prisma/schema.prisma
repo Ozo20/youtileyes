@@ -68,7 +68,11 @@ enum EventType {
   ARCHIVED
   IMPORTED
   GENERATED
+  SUBMITTED
+  APPROVED
+  REJECTED
   PUBLISHED
+  SUPERSEDED
   OTHER
 }
 
@@ -116,6 +120,24 @@ enum PlanningPreferenceLevel {
   AVOID
 }
 
+enum StudentCohortType {
+  CLASS
+  PROGRAMME
+  COHORT
+  OTHER
+}
+
+enum TeachingGroupMembershipMode {
+  CUSTOM
+  FULL_COHORT
+}
+
+enum TeachingDistributionMode {
+  EVEN_BY_TEACHING_CAPACITY
+  EVEN_BY_WEEK
+  FLEXIBLE
+}
+
 enum RequirementUnit {
   MINUTES
   HOURS
@@ -150,7 +172,11 @@ model Tenant {
   roomTravelTimes            RoomTravelTime[]
   instructorGroupPreferences InstructorTeachingGroupPreference[]
   studentCourseRequirements  StudentCourseRequirement[]
+  studentCohorts             StudentCohort[]
+  studentCohortMembers       StudentCohortMember[]
   teachingGroups             TeachingGroup[]
+  teachingRequirements       TeachingRequirement[]
+  teachingRequirementWeeks   TeachingRequirementWeek[]
   teachingGroupStudents      TeachingGroupStudent[]
 
   calendarDays             CalendarDay[]
@@ -164,6 +190,9 @@ model Tenant {
   planningRules PlanningRule[]
 
   plans                      Plan[]
+  planReviewWorkflows        PlanReviewWorkflow[]
+  planReviewSteps            PlanReviewStep[]
+  planReviewDecisions        PlanReviewDecision[]
   planScenarios              PlanScenario[]
   sessions                   Session[]
   sessionInstructors         SessionInstructor[]
@@ -202,8 +231,9 @@ model OrganisationUnit {
   locationLinks OrganisationUnitLocation[]
   scopeLinks    PlanningScopeOrganisationUnit[]
 
-  primaryStudents    Student[]    @relation("StudentPrimaryOrganisation")
-  primaryInstructors Instructor[] @relation("InstructorPrimaryOrganisation")
+  primaryStudents    Student[]       @relation("StudentPrimaryOrganisation")
+  primaryInstructors Instructor[]    @relation("InstructorPrimaryOrganisation")
+  studentCohorts     StudentCohort[]
 
   planningExceptions PlanningException[]
 
@@ -353,7 +383,9 @@ model AcademicPeriod {
   planningScopes PlanningScope[]
 
   studentCourseRequirements StudentCourseRequirement[]
+  studentCohorts            StudentCohort[]
   teachingGroups            TeachingGroup[]
+  teachingRequirements      TeachingRequirement[]
 
   calendarDays CalendarDay[]
 
@@ -453,6 +485,7 @@ model Student {
   primaryLocation         Location?         @relation("StudentPrimaryLocation", fields: [primaryLocationId], references: [id], onDelete: Restrict)
 
   courseRequirements StudentCourseRequirement[]
+  cohortMemberships  StudentCohortMember[]
   groupMemberships   TeachingGroupStudent[]
 
   availabilities     StudentAvailability[]
@@ -659,6 +692,50 @@ model InstructorTeachingGroupPreference {
   @@index([tenantId, active, preference])
 }
 
+model StudentCohort {
+  id                 String            @id @default(uuid())
+  tenantId           String
+  academicPeriodId   String?
+  organisationUnitId String?
+  type               StudentCohortType @default(CLASS)
+  name               String
+  code               String?
+  active             Boolean           @default(true)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  academicPeriod   AcademicPeriod?   @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+  organisationUnit OrganisationUnit? @relation(fields: [organisationUnitId], references: [id], onDelete: Restrict)
+
+  members            StudentCohortMember[]
+  teachingGroups     TeachingGroup[]
+  planningExceptions PlanningException[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, active])
+  @@index([tenantId, academicPeriodId])
+  @@index([tenantId, organisationUnitId])
+}
+
+model StudentCohortMember {
+  id              String    @id @default(uuid())
+  tenantId        String
+  studentCohortId String
+  studentId       String
+  validFrom       DateTime?
+  validTo         DateTime?
+  createdAt       DateTime  @default(now())
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  studentCohort StudentCohort @relation(fields: [studentCohortId], references: [id], onDelete: Cascade)
+  student       Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, studentCohortId, studentId])
+  @@index([tenantId, studentCohortId])
+  @@index([tenantId, studentId])
+}
+
 model StudentCourseRequirement {
   id               String              @id @default(uuid())
   tenantId         String
@@ -684,24 +761,30 @@ model StudentCourseRequirement {
 }
 
 model TeachingGroup {
-  id               String              @id @default(uuid())
-  tenantId         String
-  academicPeriodId String
-  courseId         String
-  name             String
-  code             String?
-  minStudents      Int?
-  maxStudents      Int?
-  status           TeachingGroupStatus @default(DRAFT)
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  id                 String                      @id @default(uuid())
+  tenantId           String
+  academicPeriodId   String
+  courseId           String
+  studentCohortId    String?
+  membershipMode     TeachingGroupMembershipMode @default(CUSTOM)
+  schedulingPriority Int                         @default(100)
+  name               String
+  code               String?
+  minStudents        Int?
+  maxStudents        Int?
+  status             TeachingGroupStatus         @default(DRAFT)
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
   course         Course         @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  studentCohort  StudentCohort? @relation(fields: [studentCohortId], references: [id], onDelete: Restrict)
 
   students              TeachingGroupStudent[]
+  teachingRequirements  TeachingRequirement[]
   instructorPreferences InstructorTeachingGroupPreference[]
+  planningExceptions    PlanningException[]
 
   planningRules PlanningRule[]
 
@@ -711,7 +794,57 @@ model TeachingGroup {
   @@unique([tenantId, code])
   @@index([tenantId, academicPeriodId])
   @@index([tenantId, courseId])
+  @@index([tenantId, studentCohortId])
   @@index([tenantId, status])
+}
+
+model TeachingRequirement {
+  id                     String                   @id @default(uuid())
+  tenantId               String
+  teachingGroupId        String
+  academicPeriodId       String
+  totalMinutes           Int
+  distributionMode       TeachingDistributionMode @default(EVEN_BY_TEACHING_CAPACITY)
+  minWeeklyMinutes       Int?
+  preferredWeeklyMinutes Int?
+  maxWeeklyMinutes       Int?
+  carryoverAllowed       Boolean                  @default(true)
+  priority               RequirementPriority      @default(NORMAL)
+  active                 Boolean                  @default(true)
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  teachingGroup  TeachingGroup  @relation(fields: [teachingGroupId], references: [id], onDelete: Cascade)
+  academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
+
+  weeklyAllocations TeachingRequirementWeek[]
+
+  @@unique([tenantId, teachingGroupId, academicPeriodId])
+  @@index([tenantId, academicPeriodId])
+  @@index([tenantId, teachingGroupId])
+  @@index([tenantId, active])
+}
+
+model TeachingRequirementWeek {
+  id                    String   @id @default(uuid())
+  tenantId              String
+  teachingRequirementId String
+  weekStartDate         DateTime @db.Date
+  targetMinutes         Int
+  minMinutes            Int?
+  maxMinutes            Int?
+  availableTeachingDays Int
+  adjustmentReason      String?
+  generatedAt           DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  teachingRequirement TeachingRequirement @relation(fields: [teachingRequirementId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, teachingRequirementId, weekStartDate])
+  @@index([tenantId, weekStartDate])
+  @@index([tenantId, teachingRequirementId])
 }
 
 model TeachingGroupStudent {
@@ -880,6 +1013,8 @@ model PlanningException {
   roomId             String?
   locationId         String?
   organisationUnitId String?
+  studentCohortId    String?
+  teachingGroupId    String?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 
@@ -889,12 +1024,16 @@ model PlanningException {
   room             Room?             @relation(fields: [roomId], references: [id], onDelete: Restrict)
   location         Location?         @relation(fields: [locationId], references: [id], onDelete: Restrict)
   organisationUnit OrganisationUnit? @relation(fields: [organisationUnitId], references: [id], onDelete: Restrict)
+  studentCohort    StudentCohort?    @relation(fields: [studentCohortId], references: [id], onDelete: Restrict)
+  teachingGroup    TeachingGroup?    @relation(fields: [teachingGroupId], references: [id], onDelete: Restrict)
 
   @@index([tenantId, status, startAt, endAt])
   @@index([tenantId, instructorId])
   @@index([tenantId, studentId])
   @@index([tenantId, roomId])
   @@index([tenantId, locationId])
+  @@index([tenantId, studentCohortId])
+  @@index([tenantId, teachingGroupId])
 }
 
 enum PlanningRuleType {
@@ -1011,9 +1150,38 @@ model PlanningRule {
 enum PlanStatus {
   DRAFT
   GENERATED
+  SUBMITTED
+  IN_REVIEW
   REVIEWED
+  APPROVED
   PUBLISHED
+  SUPERSEDED
   ARCHIVED
+}
+
+enum PlanReviewWorkflowStatus {
+  DRAFT
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum PlanReviewStepStatus {
+  PENDING
+  READY
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  RETURNED
+  SKIPPED
+}
+
+enum PlanReviewDecisionType {
+  APPROVE
+  REJECT
+  RETURN_FOR_CHANGES
 }
 
 enum ScenarioStatus {
@@ -1040,18 +1208,33 @@ enum SessionOrigin {
 }
 
 model Plan {
-  id               String     @id @default(uuid())
-  tenantId         String
-  planningScopeId  String
-  academicPeriodId String
-  name             String
-  version          Int
-  status           PlanStatus @default(DRAFT)
-  basedOnPlanId    String?
-  publishedAt      DateTime?
-  publishedById    String?
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+  id                String     @id @default(uuid())
+  tenantId          String
+  planningScopeId   String
+  academicPeriodId  String
+  name              String
+  version           Int
+  status            PlanStatus @default(DRAFT)
+  basedOnPlanId     String?
+  // Planning dates deliberately separate "today", the frozen window, and the editable horizon.
+  // Historical dates before planningStartDate are never rewritten by normal replanning.
+  planningAsOfDate  DateTime?  @db.Date
+  frozenThroughDate DateTime?  @db.Date
+  planningStartDate DateTime?  @db.Date
+  planningEndDate   DateTime?  @db.Date
+
+  // Effective dates describe when an approved/published plan revision is intended to apply.
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+
+  submittedAt   DateTime?
+  submittedById String?
+  approvedAt    DateTime?
+  publishedAt   DateTime?
+  publishedById String?
+  supersededAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   planningScope  PlanningScope  @relation(fields: [planningScopeId], references: [id], onDelete: Restrict)
@@ -1060,13 +1243,80 @@ model Plan {
   basedOnPlan  Plan?  @relation("PlanVersionHistory", fields: [basedOnPlanId], references: [id], onDelete: Restrict)
   derivedPlans Plan[] @relation("PlanVersionHistory")
 
-  scenarios PlanScenario[]
-  sessions  Session[]
+  scenarios       PlanScenario[]
+  sessions        Session[]
+  reviewWorkflows PlanReviewWorkflow[]
 
   @@unique([tenantId, planningScopeId, version])
   @@index([tenantId, status])
   @@index([tenantId, planningScopeId])
   @@index([tenantId, academicPeriodId])
+}
+
+model PlanReviewWorkflow {
+  id          String                   @id @default(uuid())
+  tenantId    String
+  planId      String
+  name        String
+  status      PlanReviewWorkflowStatus @default(DRAFT)
+  submittedAt DateTime?
+  completedAt DateTime?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  steps PlanReviewStep[]
+
+  @@unique([tenantId, planId, name])
+  @@index([tenantId, status])
+  @@index([tenantId, planId])
+}
+
+model PlanReviewStep {
+  id           String               @id @default(uuid())
+  tenantId     String
+  workflowId   String
+  stage        Int
+  position     Int                  @default(1)
+  name         String
+  reviewerRole String?
+  reviewerId   String?
+  reviewerName String?
+  required     Boolean              @default(true)
+  status       PlanReviewStepStatus @default(PENDING)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  workflow PlanReviewWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  decisions PlanReviewDecision[]
+
+  // Multiple reviewers can share a stage (parallel review); position keeps display order stable.
+  @@unique([tenantId, workflowId, stage, position])
+  @@index([tenantId, workflowId, stage])
+  @@index([tenantId, reviewerId, status])
+}
+
+model PlanReviewDecision {
+  id        String                 @id @default(uuid())
+  tenantId  String
+  stepId    String
+  decision  PlanReviewDecisionType
+  actorId   String?
+  actorName String?
+  comment   String?
+  decidedAt DateTime               @default(now())
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  step   PlanReviewStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, stepId, decidedAt])
+  @@index([tenantId, actorId, decidedAt])
 }
 
 model PlanScenario {
