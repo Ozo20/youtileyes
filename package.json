@@ -24,7 +24,9 @@
     "planning:recovery:verify": "tsx scripts/verify-planning-recovery.ts",
     "planning:test:recovery:verify": "tsx scripts/test-planning-recovery-verification.ts",
     "planning:test:resource-recovery": "tsx scripts/test-resource-recovery.ts",
-    "planning:resource-recovery": "tsx scripts/simulate-resource-recovery.ts"
+    "planning:resource-recovery": "tsx scripts/simulate-resource-recovery.ts",
+    "planning:resource-recovery:create": "tsx scripts/create-resource-recovery-scenario.ts",
+    "planning:resource-recovery:check": "tsx scripts/check-resource-recovery-scenario.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
