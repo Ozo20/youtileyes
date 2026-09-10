@@ -20,7 +20,9 @@
     "planning:feasibility": "tsx scripts/analyze-planning-feasibility.ts",
     "planning:test:feasibility": "tsx scripts/test-planning-feasibility.ts",
     "planning:recovery": "tsx scripts/simulate-planning-recovery.ts",
-    "planning:test:recovery": "tsx scripts/test-planning-recovery.ts"
+    "planning:test:recovery": "tsx scripts/test-planning-recovery.ts",
+    "planning:recovery:verify": "tsx scripts/verify-planning-recovery.ts",
+    "planning:test:recovery:verify": "tsx scripts/test-planning-recovery-verification.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
