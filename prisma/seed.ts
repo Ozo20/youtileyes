@@ -574,6 +574,39 @@ async function main() {
     });
   }
 
+  // Demo availability inside the future planning horizon. These rows prove that
+  // contract 1.2 can move teaching around unavailable resources without changing
+  // anything before planningStartDate.
+  await prisma.instructorAvailability.deleteMany({
+    where: { tenantId: tenant.id, reasonCode: "DEMO_HORIZON_BLOCK" },
+  });
+  await prisma.instructorAvailability.create({
+    data: {
+      tenantId: tenant.id,
+      instructorId: instructorByExternalId["T1"].id,
+      date: new Date("2026-09-16T00:00:00.000Z"),
+      startMinute: 8 * 60,
+      endMinute: 12 * 60,
+      status: "UNAVAILABLE",
+      reasonCode: "DEMO_HORIZON_BLOCK",
+    },
+  });
+
+  await prisma.roomAvailability.deleteMany({
+    where: { tenantId: tenant.id, reasonCode: "DEMO_HORIZON_BLOCK" },
+  });
+  await prisma.roomAvailability.create({
+    data: {
+      tenantId: tenant.id,
+      roomId: roomByCode["A10"].id,
+      date: new Date("2026-09-17T00:00:00.000Z"),
+      startMinute: 0,
+      endMinute: 24 * 60,
+      status: "UNAVAILABLE",
+      reasonCode: "DEMO_HORIZON_BLOCK",
+    },
+  });
+
   const loadProfile = await prisma.loadProfile.upsert({
     where: {
       tenantId_code: {

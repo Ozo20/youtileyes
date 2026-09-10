@@ -5,18 +5,22 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import (
+    CalendarDayInput,
     InstructorInput,
     LoadProfileInput,
+    PlanningWindowInput,
+    ResourceBlockInput,
     RoomInput,
     SolverInput,
     SolverOutput,
     TeachingGroupInput,
+    TeachingOccurrenceInput,
     TravelInput,
     solver_output_to_dict,
 )
 
 
-SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1"}
+SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2"}
 
 
 class SolverInputError(ValueError):
@@ -35,6 +39,18 @@ def _int_map(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         raise SolverInputError("Expected a JSON object containing integer penalties")
     return {str(key): int(item) for key, item in value.items()}
+
+
+def _resource_blocks(items: Any) -> tuple[ResourceBlockInput, ...]:
+    return tuple(
+        ResourceBlockInput(
+            resource_id=str(item["resourceId"]),
+            date=str(item["date"]),
+            start_minute=int(item["startMinute"]),
+            end_minute=int(item["endMinute"]),
+        )
+        for item in (items or [])
+    )
 
 
 def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
@@ -88,7 +104,6 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
     )
 
     profile = _required(data, "studentLoadProfile")
-
     student_load_profile = LoadProfileInput(
         max_teaching_minutes_per_day=profile.get("maxTeachingMinutesPerDay"),
         max_continuous_teaching_minutes=profile.get("maxContinuousTeachingMinutes"),
@@ -101,11 +116,59 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
         travel_consumes_break_time=bool(profile.get("travelConsumesBreakTime", True)),
     )
 
+    planning_window = None
+    calendar_days: tuple[CalendarDayInput, ...] = ()
+    teaching_occurrences: tuple[TeachingOccurrenceInput, ...] = ()
+    instructor_blocks: tuple[ResourceBlockInput, ...] = ()
+    student_blocks: tuple[ResourceBlockInput, ...] = ()
+    room_blocks: tuple[ResourceBlockInput, ...] = ()
+
+    if schema_version == "1.2":
+        window = _required(data, "planningWindow")
+        planning_window = PlanningWindowInput(
+            as_of_date=str(_required(window, "asOfDate")),
+            frozen_through_date=(
+                str(window["frozenThroughDate"])
+                if window.get("frozenThroughDate") is not None
+                else None
+            ),
+            start_date=str(_required(window, "startDate")),
+            end_date=str(_required(window, "endDate")),
+        )
+
+        calendar_days = tuple(
+            CalendarDayInput(
+                date=str(item["date"]),
+                teaching_allowed=bool(item["teachingAllowed"]),
+            )
+            for item in _required(data, "calendarDays")
+        )
+
+        teaching_occurrences = tuple(
+            TeachingOccurrenceInput(
+                id=str(item["id"]),
+                teaching_group_id=str(item["teachingGroupId"]),
+                week_start_date=str(item["weekStartDate"]),
+                duration_minutes=int(item["durationMinutes"]),
+                allowed_dates=tuple(str(value) for value in item["allowedDates"]),
+            )
+            for item in _required(data, "teachingOccurrences")
+        )
+
+        blocks = data.get("resourceBlocks", {})
+        instructor_blocks = _resource_blocks(blocks.get("instructors"))
+        student_blocks = _resource_blocks(blocks.get("students"))
+        room_blocks = _resource_blocks(blocks.get("rooms"))
+
+    date = str(data["date"]) if data.get("date") is not None else None
+    if schema_version in {"1.0", "1.1"} and date is None:
+        raise SolverInputError("Single-day solver contracts require field: date")
+
     return SolverInput(
         schema_version=schema_version,
         tenant_id=str(_required(data, "tenantId")),
         plan_scenario_id=str(_required(data, "planScenarioId")),
-        date=str(_required(data, "date")),
+        date=date,
         start_times=tuple(int(value) for value in _required(data, "startTimes")),
         instructors=instructors,
         rooms=rooms,
@@ -113,6 +176,12 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
         travel=travel,
         student_load_profile=student_load_profile,
         metadata=dict(data.get("metadata", {})),
+        planning_window=planning_window,
+        calendar_days=calendar_days,
+        teaching_occurrences=teaching_occurrences,
+        instructor_blocks=instructor_blocks,
+        student_blocks=student_blocks,
+        room_blocks=room_blocks,
     )
 
 

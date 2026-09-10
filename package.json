@@ -12,10 +12,11 @@
     "solver:persist": "tsx scripts/persist-solver-output.ts",
     "solver:test:core": "PYTHONPATH=. python solver/tests/core_scheduler.py",
     "solver:test:preferences": "PYTHONPATH=. python solver/tests/resource_preferences.py",
-    "solver:test:contract": "PYTHONPATH=. python solver/tests/contract_v1_1.py",
+    "solver:test:contract": "PYTHONPATH=. python solver/tests/contract_v1_2.py",
     "planning:allocate": "tsx scripts/build-teaching-allocations.ts",
     "planning:check": "tsx scripts/check-teaching-allocations.ts",
-    "planning:lifecycle-check": "tsx scripts/check-plan-lifecycle.ts"
+    "planning:lifecycle-check": "tsx scripts/check-plan-lifecycle.ts",
+    "solver:test:horizon": "PYTHONPATH=. python solver/tests/multi_day_horizon.py"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

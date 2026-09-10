@@ -51,11 +51,41 @@ class TravelInput:
 
 
 @dataclass(frozen=True)
+class PlanningWindowInput:
+    as_of_date: str
+    frozen_through_date: str | None
+    start_date: str
+    end_date: str
+
+
+@dataclass(frozen=True)
+class CalendarDayInput:
+    date: str
+    teaching_allowed: bool
+
+
+@dataclass(frozen=True)
+class TeachingOccurrenceInput:
+    id: str
+    teaching_group_id: str
+    week_start_date: str
+    duration_minutes: int
+    allowed_dates: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResourceBlockInput:
+    resource_id: str
+    date: str
+    start_minute: int
+    end_minute: int
+
+
+@dataclass(frozen=True)
 class SolverInput:
     schema_version: str
     tenant_id: str
     plan_scenario_id: str
-    date: str
     start_times: tuple[int, ...]
     instructors: tuple[InstructorInput, ...]
     rooms: tuple[RoomInput, ...]
@@ -63,6 +93,17 @@ class SolverInput:
     travel: tuple[TravelInput, ...]
     student_load_profile: LoadProfileInput
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # 1.0/1.1 single-day compatibility.
+    date: str | None = None
+
+    # 1.2 planning-horizon fields.
+    planning_window: PlanningWindowInput | None = None
+    calendar_days: tuple[CalendarDayInput, ...] = ()
+    teaching_occurrences: tuple[TeachingOccurrenceInput, ...] = ()
+    instructor_blocks: tuple[ResourceBlockInput, ...] = ()
+    student_blocks: tuple[ResourceBlockInput, ...] = ()
+    room_blocks: tuple[ResourceBlockInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +113,8 @@ class ScheduledSessionOutput:
     end_minute: int
     instructor_id: str
     room_id: str
+    date: str | None = None
+    occurrence_id: str | None = None
 
 
 @dataclass(frozen=True)
