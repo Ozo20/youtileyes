@@ -53,6 +53,12 @@ def build_candidates(
                    if len(group.students) > room.capacity:
                        continue
 
+                   assignment_penalty = (
+                       instructor.course_penalties.get(group.course, 0)
+                       + group.room_penalties.get(room.id, 0)
+                       + group.instructor_penalties.get(instructor.id, 0)
+                   )
+
                    candidates.append(
                        Candidate(
                            group_id=group.id,
@@ -60,6 +66,7 @@ def build_candidates(
                            end=end,
                            instructor_id=instructor.id,
                            room_id=room.id,
+                           assignment_penalty=assignment_penalty,
                        )
                    )
 
@@ -388,12 +395,18 @@ def solve_schedule(
 
    first_start = min(start_times)
 
-   # Mild preference for earlier sessions.
+   # Mild preference for earlier sessions, plus persisted resource
+   # suitability/qualification/preference penalties from the input model.
    for index, candidate in enumerate(candidates):
        objective_terms.append(
            (candidate.start - first_start)
            * variables[index]
        )
+
+       if candidate.assignment_penalty != 0:
+           objective_terms.append(
+               candidate.assignment_penalty * variables[index]
+           )
 
    # Penalise room changes for students.
    #

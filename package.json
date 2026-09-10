@@ -9,7 +9,10 @@
     "lint": "eslint",
     "db:seed": "tsx prisma/seed.ts",
     "solver:input": "tsx scripts/build-solver-input.ts",
-    "solver:persist": "tsx scripts/persist-solver-output.ts"
+    "solver:persist": "tsx scripts/persist-solver-output.ts",
+    "solver:test:core": "PYTHONPATH=. python solver/tests/core_scheduler.py",
+    "solver:test:preferences": "PYTHONPATH=. python solver/tests/resource_preferences.py",
+    "solver:test:contract": "PYTHONPATH=. python solver/tests/contract_v1_1.py"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

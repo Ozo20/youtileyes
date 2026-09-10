@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "1.1",
+  "tenantId": "tenant-demo",
+  "planScenarioId": "scenario-demo",
+  "date": "2026-09-10",
+  "startTimes": [495],
+  "instructors": [
+    {
+      "id": "T1",
+      "name": "Primary teacher",
+      "courseIds": ["MAT"],
+      "coursePenalties": {"MAT": 0}
+    },
+    {
+      "id": "T2",
+      "name": "Fallback teacher",
+      "courseIds": ["MAT"],
+      "coursePenalties": {"MAT": 30}
+    }
+  ],
+  "rooms": [
+    {"id": "A10", "name": "A10", "capacity": 10},
+    {"id": "B14", "name": "B14", "capacity": 10}
+  ],
+  "teachingGroups": [
+    {
+      "id": "G1",
+      "courseId": "MAT",
+      "studentIds": ["S1", "S2"],
+      "durationMinutes": 45,
+      "allowedRoomIds": ["A10", "B14"],
+      "roomPenalties": {"A10": 0, "B14": 90},
+      "instructorPenalties": {"T1": -20, "T2": 120}
+    }
+  ],
+  "travel": [
+    {"fromRoomId": "A10", "toRoomId": "A10", "minutes": 0},
+    {"fromRoomId": "B14", "toRoomId": "B14", "minutes": 0},
+    {"fromRoomId": "A10", "toRoomId": "B14", "minutes": 12},
+    {"fromRoomId": "B14", "toRoomId": "A10", "minutes": 12}
+  ],
+  "studentLoadProfile": {
+    "maxTeachingMinutesPerDay": 270,
+    "maxContinuousTeachingMinutes": 120,
+    "minBreakMinutes": 15,
+    "minBreakAfterDoubleMinutes": 20,
+    "maxSessionsPerDay": 4,
+    "minLunchMinutes": null,
+    "lunchWindowStart": null,
+    "lunchWindowEnd": null,
+    "travelConsumesBreakTime": true
+  },
+  "metadata": {
+    "source": "fixture"
+  }
+}
