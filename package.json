@@ -16,7 +16,9 @@
     "planning:allocate": "tsx scripts/build-teaching-allocations.ts",
     "planning:check": "tsx scripts/check-teaching-allocations.ts",
     "planning:lifecycle-check": "tsx scripts/check-plan-lifecycle.ts",
-    "solver:test:horizon": "PYTHONPATH=. python solver/tests/multi_day_horizon.py"
+    "solver:test:horizon": "PYTHONPATH=. python solver/tests/multi_day_horizon.py",
+    "planning:feasibility": "tsx scripts/analyze-planning-feasibility.ts",
+    "planning:test:feasibility": "tsx scripts/test-planning-feasibility.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
