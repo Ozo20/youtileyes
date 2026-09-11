@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 
 import "@/styles/master-data.css";
+import "@/styles/planning.css";
 import "@/styles/schedule.css";
 
 export default function PortalLayout({
