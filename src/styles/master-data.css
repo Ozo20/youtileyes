@@ -927,3 +927,87 @@ textarea.master-input,
   }
 
 }
+/* -------------------------------------------------------------------------- */
+/* STUDENTS / COHORTS / LOCATIONS                                             */
+/* -------------------------------------------------------------------------- */
+
+.master-list-message {
+  padding: 14px 12px;
+}
+
+.master-relation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 12px;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.master-relation-row:last-child {
+  border-bottom: 0;
+}
+
+.master-relation-row:hover {
+  background: var(--surface-subtle);
+}
+
+.master-relation-row > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.master-relation-row strong {
+  font-size: 11px;
+}
+
+.master-relation-row span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.cohort-member-add-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.master-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.master-metric-grid > div {
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.master-metric-grid strong {
+  font-size: 18px;
+}
+
+.master-metric-grid span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+@media (max-width: 680px) {
+  .cohort-member-add-form {
+    grid-template-columns: 1fr;
+  }
+
+  .master-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

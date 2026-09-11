@@ -10,6 +10,7 @@ import {
   Settings,
   SlidersHorizontal,
   Users,
+  UsersRound,
 } from "lucide-react";
 
 export const portalNavigation = [
@@ -27,6 +28,11 @@ export const portalNavigation = [
     label: "Students",
     href: "/students",
     icon: GraduationCap,
+  },
+  {
+    label: "Cohorts",
+    href: "/cohorts",
+    icon: UsersRound,
   },
   {
     label: "Instructors",
