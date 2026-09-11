@@ -1,5 +1,8 @@
 import {
+  BadgeCheck,
+  BookOpenCheck,
   CalendarDays,
+  DoorOpen,
   FileClock,
   GraduationCap,
   LayoutDashboard,
@@ -29,6 +32,21 @@ export const portalNavigation = [
     label: "Instructors",
     href: "/instructors",
     icon: Users,
+  },
+  {
+    label: "Courses",
+    href: "/courses",
+    icon: BookOpenCheck,
+  },
+  {
+    label: "Rooms",
+    href: "/rooms",
+    icon: DoorOpen,
+  },
+  {
+    label: "Qualifications",
+    href: "/qualifications",
+    icon: BadgeCheck,
   },
   {
     label: "Locations",

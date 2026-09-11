@@ -1534,10 +1534,11 @@ model ScenarioSession {
 }
 
 model ScenarioSessionInstructor {
-  id                String @id @default(uuid())
+  id                String           @id @default(uuid())
   tenantId          String
   scenarioSessionId String
   instructorId      String
+  role              StaffingRoleType @default(LEAD)
 
   tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   scenarioSession ScenarioSession @relation(fields: [scenarioSessionId], references: [id], onDelete: Cascade)

@@ -21,6 +21,10 @@ import {
 } from "../src/lib/planning/recovery-scenario";
 import { writeAuditEvent } from "../src/lib/audit";
 import { prisma } from "../src/lib/prisma";
+import {
+  normalizeSolverStaffing,
+  staffingInstructorIds,
+} from "../src/lib/planning/solver-staffing";
 
 const INPUT_PATH =
   process.env.YOUTILEYES_SOLVER_INPUT ??
@@ -42,6 +46,18 @@ type SolverSessionRecord = {
   endMinute?: number;
   instructor_id?: string;
   instructorId?: string;
+  instructor_ids?: string[];
+  instructorIds?: string[];
+  staffing_assignments?: Array<{
+    role?: string;
+    instructor_id?: string;
+    instructorId?: string;
+  }>;
+  staffingAssignments?: Array<{
+    role?: string;
+    instructor_id?: string;
+    instructorId?: string;
+  }>;
   room_id?: string;
   roomId?: string;
 };
@@ -106,8 +122,13 @@ function normalizeRecoveredSessions(
       session.start_minute ?? session.startMinute;
     const endMinute =
       session.end_minute ?? session.endMinute;
+    const staffingAssignments = normalizeSolverStaffing(session);
+    const instructorIds =
+      staffingInstructorIds(staffingAssignments);
     const instructorId =
-      session.instructor_id ?? session.instructorId;
+      session.instructor_id ??
+      session.instructorId ??
+      instructorIds[0];
     const roomId =
       session.room_id ?? session.roomId;
 
@@ -132,6 +153,8 @@ function normalizeRecoveredSessions(
       startMinute,
       endMinute,
       instructorId,
+      instructorIds,
+      staffingAssignments,
       roomId,
     };
   });
@@ -318,10 +341,11 @@ async function main() {
               ? `Recovery after instructor unavailability: ${resourceLabel}`
               : `Recovery after room unavailability: ${resourceLabel}`,
           instructors: {
-            create: {
+            create: session.staffingAssignments.map((assignment) => ({
               tenantId: baseScenario.tenantId,
-              instructorId: session.instructorId,
-            },
+              instructorId: assignment.instructorId,
+              role: assignment.role,
+            })),
           },
           students: {
             create: (studentsByGroup.get(session.teachingGroupId) ?? []).map(
@@ -428,6 +452,13 @@ async function main() {
         changedSessionCount: changes.length,
         directChangeCount,
         cascadingChangeCount,
+        multiInstructorSessionCount: recoveredSessions.filter(
+          (session) => session.instructorIds.length > 1,
+        ).length,
+        persistedInstructorAssignmentCount: recoveredSessions.reduce(
+          (sum, session) => sum + session.instructorIds.length,
+          0,
+        ),
       },
     });
 
@@ -454,6 +485,8 @@ async function main() {
           direct: change.direct,
           changedFields: change.changedFields,
           disruption,
+          beforeStaffing: change.before?.staffingAssignments ?? [],
+          afterStaffing: change.after?.staffingAssignments ?? [],
         },
       });
     }
@@ -476,6 +509,13 @@ async function main() {
       recoveredOutput.objectiveValue ??
       null,
     sessions: recoveredSessions.length,
+    instructorAssignments: recoveredSessions.reduce(
+      (sum, session) => sum + session.instructorIds.length,
+      0,
+    ),
+    multiInstructorSessions: recoveredSessions.filter(
+      (session) => session.instructorIds.length > 1,
+    ).length,
     changedSessionCount: changes.length,
     directChangeCount,
     cascadingChangeCount,
@@ -495,6 +535,17 @@ async function main() {
   console.log(`Resource: ${resourceLabel}`);
   console.log(`Solver: ${recoveredOutput.status}`);
   console.log(`Sessions: ${recoveredSessions.length}`);
+  console.log(
+    `Instructor assignments: ${recoveredSessions.reduce(
+      (sum, session) => sum + session.instructorIds.length,
+      0,
+    )}`,
+  );
+  console.log(
+    `Multi-instructor sessions: ${recoveredSessions.filter(
+      (session) => session.instructorIds.length > 1,
+    ).length}`,
+  );
   console.log(`Changes: ${changes.length}`);
   console.log(`Direct: ${directChangeCount}`);
   console.log(`Cascading: ${cascadingChangeCount}`);

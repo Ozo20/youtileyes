@@ -18,7 +18,20 @@ export type SolverSessionLike = {
   startMinute?: number;
   end_minute?: number;
   endMinute?: number;
+  instructor_ids?: string[];
+  instructorIds?: string[];
+  staffing_assignments?: Array<{
+    role?: string;
+    instructor_id?: string;
+    instructorId?: string;
+  }>;
+  staffingAssignments?: Array<{
+    role?: string;
+    instructor_id?: string;
+    instructorId?: string;
+  }>;
 };
+
 
 export type SolverOutputLike = {
   status: string;
@@ -44,11 +57,18 @@ export type SolverInputLike = {
     name: string;
     courseIds: string[];
     coursePenalties?: Record<string, number>;
+    qualificationLevels?: Record<string, number>;
   }>;
   rooms: Array<{
     id: string;
     name: string;
     capacity: number;
+    staffingRoles?: Array<{
+      id: string;
+      role: string;
+      requiredQualificationId?: string | null;
+      minimumQualificationLevel?: number | null;
+    }>;
   }>;
   teachingGroups: Array<{
     id: string;
@@ -58,6 +78,12 @@ export type SolverInputLike = {
     allowedRoomIds: string[];
     roomPenalties?: Record<string, number>;
     instructorPenalties?: Record<string, number>;
+    staffingRoles?: Array<{
+      id: string;
+      role: string;
+      requiredQualificationId?: string | null;
+      minimumQualificationLevel?: number | null;
+    }>;
   }>;
   calendarDays?: Array<{
     date: string;

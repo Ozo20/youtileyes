@@ -1,5 +1,7 @@
 import { Prisma } from "../../generated/prisma/client";
 
+import type { SolverStaffingAssignment } from "./solver-staffing";
+
 export type RecoveryScenarioSession = {
   occurrenceId: string;
   teachingGroupId: string;
@@ -7,6 +9,8 @@ export type RecoveryScenarioSession = {
   startMinute: number;
   endMinute: number;
   instructorId: string;
+  instructorIds: string[];
+  staffingAssignments: SolverStaffingAssignment[];
   roomId: string;
 };
 
@@ -19,6 +23,8 @@ export type RecoveryScenarioChange = {
     startMinute: number | null;
     endMinute: number | null;
     instructorId: string | null;
+    instructorIds?: string[];
+    staffingAssignments?: SolverStaffingAssignment[];
     roomId: string | null;
   } | null;
   after: {
@@ -26,6 +32,8 @@ export type RecoveryScenarioChange = {
     startMinute: number | null;
     endMinute: number | null;
     instructorId: string | null;
+    instructorIds?: string[];
+    staffingAssignments?: SolverStaffingAssignment[];
     roomId: string | null;
   } | null;
   changedFields: string[];
@@ -54,7 +62,11 @@ export function scenarioChangeType(
   }
 
   if (
-    changedFields.includes("instructorId") &&
+    (
+      changedFields.includes("instructorId") ||
+      changedFields.includes("instructorIds") ||
+      changedFields.includes("staffingAssignments")
+    ) &&
     !changedFields.includes("roomId")
   ) {
     return "INSTRUCTOR_CHANGED";

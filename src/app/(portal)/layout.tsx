@@ -2,12 +2,13 @@ import type { ReactNode } from "react";
 
 import { AppShell } from "@/components/layout/app-shell";
 
+import "@/styles/master-data.css";
 import "@/styles/schedule.css";
 
 export default function PortalLayout({
- children,
+  children,
 }: Readonly<{
- children: ReactNode;
+  children: ReactNode;
 }>) {
- return <AppShell>{children}</AppShell>;
+  return <AppShell>{children}</AppShell>;
 }

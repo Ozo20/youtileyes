@@ -3,6 +3,11 @@ import {
   type SolverInputLike,
   type SolverOutputLike,
 } from "./recovery-verification";
+import {
+  normalizeSolverStaffing,
+  staffingInstructorIds,
+  type SolverStaffingAssignment,
+} from "./solver-staffing";
 
 export type ResourceDisruptionType =
   | "INSTRUCTOR_UNAVAILABLE"
@@ -26,6 +31,8 @@ export type ResourceRecoverySessionChange = {
     startMinute: number | null;
     endMinute: number | null;
     instructorId: string | null;
+    instructorIds: string[];
+    staffingAssignments: SolverStaffingAssignment[];
     roomId: string | null;
   } | null;
   after: {
@@ -33,6 +40,8 @@ export type ResourceRecoverySessionChange = {
     startMinute: number | null;
     endMinute: number | null;
     instructorId: string | null;
+    instructorIds: string[];
+    staffingAssignments: SolverStaffingAssignment[];
     roomId: string | null;
   } | null;
   changedFields: string[];
@@ -57,6 +66,8 @@ type NormalizedSession = {
   startMinute: number | null;
   endMinute: number | null;
   instructorId: string | null;
+  instructorIds: string[];
+  staffingAssignments: SolverStaffingAssignment[];
   roomId: string | null;
 };
 
@@ -74,6 +85,11 @@ function normalizeSession(session: unknown): NormalizedSession {
   if (!occurrenceId) {
     throw new Error("Solver output session is missing occurrence id.");
   }
+
+  const staffingAssignments = normalizeSolverStaffing(
+    value as Parameters<typeof normalizeSolverStaffing>[0],
+  );
+  const instructorIds = staffingInstructorIds(staffingAssignments);
 
   return {
     occurrenceId,
@@ -93,7 +109,10 @@ function normalizeSession(session: unknown): NormalizedSession {
     instructorId:
       (value.instructor_id as string | undefined) ??
       (value.instructorId as string | undefined) ??
+      instructorIds[0] ??
       null,
+    instructorIds,
+    staffingAssignments,
     roomId:
       (value.room_id as string | undefined) ??
       (value.roomId as string | undefined) ??
@@ -192,6 +211,21 @@ function changedFields(
   if (before.startMinute !== after.startMinute) result.push("startMinute");
   if (before.endMinute !== after.endMinute) result.push("endMinute");
   if (before.instructorId !== after.instructorId) result.push("instructorId");
+
+  if (
+    JSON.stringify(before.instructorIds) !==
+    JSON.stringify(after.instructorIds)
+  ) {
+    result.push("instructorIds");
+  }
+
+  if (
+    JSON.stringify(before.staffingAssignments) !==
+    JSON.stringify(after.staffingAssignments)
+  ) {
+    result.push("staffingAssignments");
+  }
+
   if (before.roomId !== after.roomId) result.push("roomId");
 
   return result;
@@ -204,7 +238,7 @@ function isDirectChange(
   if (!before) return false;
 
   if (disruption.type === "INSTRUCTOR_UNAVAILABLE") {
-    return before.instructorId === disruption.resourceId;
+    return before.instructorIds.includes(disruption.resourceId);
   }
 
   return before.roomId === disruption.resourceId;
@@ -243,6 +277,8 @@ export function compareRecoveryOutputs(
             startMinute: before.startMinute,
             endMinute: before.endMinute,
             instructorId: before.instructorId,
+            instructorIds: before.instructorIds,
+            staffingAssignments: before.staffingAssignments,
             roomId: before.roomId,
           }
         : null,
@@ -252,6 +288,8 @@ export function compareRecoveryOutputs(
             startMinute: after.startMinute,
             endMinute: after.endMinute,
             instructorId: after.instructorId,
+            instructorIds: after.instructorIds,
+            staffingAssignments: after.staffingAssignments,
             roomId: after.roomId,
           }
         : null,
