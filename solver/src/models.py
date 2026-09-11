@@ -7,6 +7,15 @@ class Instructor:
     name: str
     courses: frozenset[str]
     course_penalties: dict[str, int] = field(default_factory=dict)
+    qualification_levels: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StaffingRole:
+    id: str
+    role: str
+    required_qualification_id: str | None = None
+    minimum_qualification_level: int | None = None
 
 
 @dataclass(frozen=True)
@@ -14,6 +23,7 @@ class Room:
     id: str
     name: str
     capacity: int
+    staffing_roles: tuple[StaffingRole, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -25,6 +35,7 @@ class TeachingGroup:
     allowed_rooms: frozenset[str]
     room_penalties: dict[str, int] = field(default_factory=dict)
     instructor_penalties: dict[str, int] = field(default_factory=dict)
+    staffing_roles: tuple[StaffingRole, ...] = ()
 
 
 @dataclass(frozen=True)

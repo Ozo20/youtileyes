@@ -4,11 +4,12 @@ from collections import defaultdict
 
 from .contracts import (
     ScheduledSessionOutput,
+    StaffingAssignmentOutput,
     SolverInput,
     SolverMetricOutput,
     SolverOutput,
 )
-from .models import Instructor, LoadProfile, Room, TeachingGroup
+from .models import Instructor, LoadProfile, Room, StaffingRole, TeachingGroup
 from .multi_day import MultiDayOccurrence, ResourceBlock, solve_multi_day_week
 from .scheduler import solve_schedule
 
@@ -20,6 +21,7 @@ def _domain_resources(payload: SolverInput):
             name=item.name,
             courses=frozenset(item.course_ids),
             course_penalties=dict(item.course_penalties),
+            qualification_levels=dict(item.qualification_levels),
         )
         for item in payload.instructors
     ]
@@ -29,6 +31,15 @@ def _domain_resources(payload: SolverInput):
             id=item.id,
             name=item.name,
             capacity=item.capacity,
+            staffing_roles=tuple(
+                StaffingRole(
+                    id=role.id,
+                    role=role.role,
+                    required_qualification_id=role.required_qualification_id,
+                    minimum_qualification_level=role.minimum_qualification_level,
+                )
+                for role in item.staffing_roles
+            ),
         )
         for item in payload.rooms
     ]
@@ -42,6 +53,15 @@ def _domain_resources(payload: SolverInput):
             allowed_rooms=frozenset(item.allowed_room_ids),
             room_penalties=dict(item.room_penalties),
             instructor_penalties=dict(item.instructor_penalties),
+            staffing_roles=tuple(
+                StaffingRole(
+                    id=role.id,
+                    role=role.role,
+                    required_qualification_id=role.required_qualification_id,
+                    minimum_qualification_level=role.minimum_qualification_level,
+                )
+                for role in item.staffing_roles
+            ),
         )
         for item in payload.teaching_groups
     ]
@@ -216,8 +236,18 @@ def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
                 date=session.date,
                 start_minute=session.start,
                 end_minute=session.end,
-                instructor_id=session.instructor.id,
+                instructor_id=session.instructors[0].id,
                 room_id=session.room.id,
+                instructor_ids=tuple(
+                    instructor.id for instructor in session.instructors
+                ),
+                staffing_assignments=tuple(
+                    StaffingAssignmentOutput(
+                        role=role,
+                        instructor_id=instructor.id,
+                    )
+                    for role, instructor in session.staffing_assignments
+                ),
             )
             for session in result.sessions
         )
@@ -258,6 +288,6 @@ def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
 
 
 def run_solver(payload: SolverInput) -> SolverOutput:
-    if payload.schema_version == "1.2":
+    if payload.schema_version in {"1.2", "1.3"}:
         return _run_planning_horizon(payload)
     return _run_single_day(payload)

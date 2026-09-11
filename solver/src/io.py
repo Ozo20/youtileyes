@@ -11,6 +11,7 @@ from .contracts import (
     PlanningWindowInput,
     ResourceBlockInput,
     RoomInput,
+    StaffingRoleInput,
     SolverInput,
     SolverOutput,
     TeachingGroupInput,
@@ -20,7 +21,7 @@ from .contracts import (
 )
 
 
-SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2"}
+SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2", "1.3"}
 
 
 class SolverInputError(ValueError):
@@ -68,6 +69,7 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
             name=str(item["name"]),
             course_ids=tuple(str(value) for value in item["courseIds"]),
             course_penalties=_int_map(item.get("coursePenalties")),
+            qualification_levels=_int_map(item.get("qualificationLevels")),
         )
         for item in _required(data, "instructors")
     )
@@ -77,6 +79,23 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
             id=str(item["id"]),
             name=str(item["name"]),
             capacity=int(item["capacity"]),
+            staffing_roles=tuple(
+                StaffingRoleInput(
+                    id=str(role["id"]),
+                    role=str(role["role"]),
+                    required_qualification_id=(
+                        str(role["requiredQualificationId"])
+                        if role.get("requiredQualificationId") is not None
+                        else None
+                    ),
+                    minimum_qualification_level=(
+                        int(role["minimumQualificationLevel"])
+                        if role.get("minimumQualificationLevel") is not None
+                        else None
+                    ),
+                )
+                for role in item.get("staffingRoles", [])
+            ),
         )
         for item in _required(data, "rooms")
     )
@@ -90,6 +109,23 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
             allowed_room_ids=tuple(str(value) for value in item["allowedRoomIds"]),
             room_penalties=_int_map(item.get("roomPenalties")),
             instructor_penalties=_int_map(item.get("instructorPenalties")),
+            staffing_roles=tuple(
+                StaffingRoleInput(
+                    id=str(role["id"]),
+                    role=str(role["role"]),
+                    required_qualification_id=(
+                        str(role["requiredQualificationId"])
+                        if role.get("requiredQualificationId") is not None
+                        else None
+                    ),
+                    minimum_qualification_level=(
+                        int(role["minimumQualificationLevel"])
+                        if role.get("minimumQualificationLevel") is not None
+                        else None
+                    ),
+                )
+                for role in item.get("staffingRoles", [])
+            ),
         )
         for item in _required(data, "teachingGroups")
     )
@@ -123,7 +159,7 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
     student_blocks: tuple[ResourceBlockInput, ...] = ()
     room_blocks: tuple[ResourceBlockInput, ...] = ()
 
-    if schema_version == "1.2":
+    if schema_version in {"1.2", "1.3"}:
         window = _required(data, "planningWindow")
         planning_window = PlanningWindowInput(
             as_of_date=str(_required(window, "asOfDate")),

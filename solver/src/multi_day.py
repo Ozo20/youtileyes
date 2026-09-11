@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import permutations
 
 from ortools.sat.python import cp_model
 
-from .models import Instructor, LoadProfile, Room, TeachingGroup
+from .models import Instructor, LoadProfile, Room, StaffingRole, TeachingGroup
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,8 @@ class MultiDayCandidate:
     date: str
     start: int
     end: int
-    instructor_id: str
+    instructor_ids: tuple[str, ...]
+    staffing_roles: tuple[str, ...]
     room_id: str
     assignment_penalty: int
 
@@ -43,7 +45,8 @@ class MultiDayScheduledSession:
     date: str
     start: int
     end: int
-    instructor: Instructor
+    instructors: tuple[Instructor, ...]
+    staffing_assignments: tuple[tuple[str, Instructor], ...]
     room: Room
 
 
@@ -95,6 +98,105 @@ def _block_map(blocks: list[ResourceBlock]) -> dict[tuple[str, str], list[tuple[
     return result
 
 
+def _effective_roles(group: TeachingGroup, room: Room) -> tuple[StaffingRole, ...]:
+    roles = tuple(group.staffing_roles) + tuple(room.staffing_roles)
+    if roles:
+        return roles
+
+    # Backward-compatible default: every lesson needs one lead instructor.
+    return (StaffingRole(id="default-lead", role="LEAD"),)
+
+
+def _qualified_for_role(
+    instructor: Instructor,
+    group: TeachingGroup,
+    role: StaffingRole,
+) -> bool:
+    # Course eligibility remains a hard requirement for every staffing slot.
+    if group.course not in instructor.courses:
+        return False
+
+    if role.required_qualification_id is None:
+        return True
+
+    level = instructor.qualification_levels.get(role.required_qualification_id)
+    if level is None:
+        return False
+
+    minimum = role.minimum_qualification_level or 1
+    return level >= minimum
+
+
+def _staffing_assignments(
+    *,
+    group: TeachingGroup,
+    room: Room,
+    instructors: list[Instructor],
+    date: str,
+    start: int,
+    end: int,
+    instructor_block_map: dict[tuple[str, str], list[tuple[int, int]]],
+) -> list[tuple[tuple[str, ...], tuple[str, ...], int]]:
+    roles = _effective_roles(group, room)
+
+    eligible_by_role: list[list[Instructor]] = []
+    for role in roles:
+        eligible = [
+            instructor
+            for instructor in instructors
+            if _qualified_for_role(instructor, group, role)
+            and not _is_blocked(
+                resource_id=instructor.id,
+                date=date,
+                start=start,
+                end=end,
+                block_map=instructor_block_map,
+            )
+        ]
+        if not eligible:
+            return []
+        eligible_by_role.append(eligible)
+
+    # Role counts are materialised into repeated role slots by the TypeScript
+    # input builder. We need distinct people across those slots.
+    unique_instructors = {item.id: item for items in eligible_by_role for item in items}
+    if len(unique_instructors) < len(roles):
+        return []
+
+    results: list[tuple[tuple[str, ...], tuple[str, ...], int]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    # The demo and intended operational rules normally use small staffing counts.
+    # permutations keeps the implementation exact and transparent.
+    for instructor_order in permutations(unique_instructors.values(), len(roles)):
+        if any(
+            instructor not in eligible_by_role[index]
+            for index, instructor in enumerate(instructor_order)
+        ):
+            continue
+
+        ids = tuple(item.id for item in instructor_order)
+        if ids in seen:
+            continue
+        seen.add(ids)
+
+        penalty = sum(
+            instructor.course_penalties.get(group.course, 0)
+            + group.instructor_penalties.get(instructor.id, 0)
+            for instructor in instructor_order
+        )
+
+        results.append(
+            (
+                ids,
+                tuple(role.role for role in roles),
+                penalty,
+            )
+        )
+
+    return results
+
+
 def build_multi_day_candidates(
     *,
     occurrences: list[MultiDayOccurrence],
@@ -137,33 +239,29 @@ def build_multi_day_candidates(
                 ):
                     continue
 
-                for instructor in instructors:
-                    if group.course not in instructor.courses:
+                for room in rooms:
+                    if room.id not in group.allowed_rooms:
                         continue
-
+                    if len(group.students) > room.capacity:
+                        continue
                     if _is_blocked(
-                        resource_id=instructor.id,
+                        resource_id=room.id,
                         date=date,
                         start=start,
                         end=end,
-                        block_map=instructor_block_map,
+                        block_map=room_block_map,
                     ):
                         continue
 
-                    for room in rooms:
-                        if room.id not in group.allowed_rooms:
-                            continue
-                        if len(group.students) > room.capacity:
-                            continue
-                        if _is_blocked(
-                            resource_id=room.id,
-                            date=date,
-                            start=start,
-                            end=end,
-                            block_map=room_block_map,
-                        ):
-                            continue
-
+                    for instructor_ids, staffing_roles, staffing_penalty in _staffing_assignments(
+                        group=group,
+                        room=room,
+                        instructors=instructors,
+                        date=date,
+                        start=start,
+                        end=end,
+                        instructor_block_map=instructor_block_map,
+                    ):
                         candidates.append(
                             MultiDayCandidate(
                                 occurrence_id=occurrence.id,
@@ -171,12 +269,12 @@ def build_multi_day_candidates(
                                 date=date,
                                 start=start,
                                 end=end,
-                                instructor_id=instructor.id,
+                                instructor_ids=instructor_ids,
+                                staffing_roles=staffing_roles,
                                 room_id=room.id,
                                 assignment_penalty=(
-                                    instructor.course_penalties.get(group.course, 0)
+                                    staffing_penalty
                                     + group.room_penalties.get(room.id, 0)
-                                    + group.instructor_penalties.get(instructor.id, 0)
                                 ),
                             )
                         )
@@ -221,7 +319,7 @@ def solve_multi_day_week(
     variables = [
         model.new_bool_var(
             f"occ_{candidate.occurrence_id}_{candidate.date}_{candidate.start}_"
-            f"{candidate.instructor_id}_{candidate.room_id}"
+            f"{'_'.join(candidate.instructor_ids)}_{candidate.room_id}"
         )
         for candidate in candidates
     ]
@@ -242,10 +340,7 @@ def solve_multi_day_week(
             )
         model.add(sum(variables[index] for index in indices) == 1)
 
-    # All collision and break constraints are day-local. Grouping candidates by date
-    # keeps the model scalable when the planning horizon contains many weeks.
-    for date, date_indices in candidates_by_date.items():
-        del date
+    for date_indices in candidates_by_date.values():
         for left_position, left_index in enumerate(date_indices):
             left = candidates[left_index]
             left_group = group_by_id[left.teaching_group_id]
@@ -263,7 +358,8 @@ def solve_multi_day_week(
                 ):
                     incompatible = True
 
-                if left.instructor_id == right.instructor_id:
+                shared_instructors = set(left.instructor_ids) & set(right.instructor_ids)
+                if shared_instructors:
                     if _overlaps(left.start, left.end, right.start, right.end):
                         incompatible = True
                     elif left.end <= right.start:
@@ -309,7 +405,7 @@ def solve_multi_day_week(
 
     students = {student for group in groups for student in group.students}
 
-    for date, date_indices in candidates_by_date.items():
+    for date_indices in candidates_by_date.values():
         if student_profile.max_sessions_per_day is not None:
             for student in students:
                 indices = [
@@ -336,9 +432,6 @@ def solve_multi_day_week(
                         sum(terms) <= student_profile.max_teaching_minutes_per_day
                     )
 
-    # Lower is better. Assignment penalties encode qualification, room suitability,
-    # and instructor/group preferences. A small time penalty avoids gratuitously late
-    # placements without overpowering those resource preferences.
     objective_terms = []
     for index, candidate in enumerate(candidates):
         time_penalty = max(0, candidate.start - 8 * 60) // 15
@@ -365,6 +458,15 @@ def solve_multi_day_week(
         if not solver.boolean_value(variables[index]):
             continue
 
+        assigned = tuple(
+            instructor_by_id[instructor_id]
+            for instructor_id in candidate.instructor_ids
+        )
+        staffing_assignments = tuple(
+            (role, instructor)
+            for role, instructor in zip(candidate.staffing_roles, assigned)
+        )
+
         scheduled.append(
             MultiDayScheduledSession(
                 occurrence_id=candidate.occurrence_id,
@@ -372,7 +474,8 @@ def solve_multi_day_week(
                 date=candidate.date,
                 start=candidate.start,
                 end=candidate.end,
-                instructor=instructor_by_id[candidate.instructor_id],
+                instructors=assigned,
+                staffing_assignments=staffing_assignments,
                 room=room_by_id[candidate.room_id],
             )
         )

@@ -223,6 +223,63 @@ async function main() {
     instructors.map((instructor) => [instructor.externalId!, instructor]),
   );
 
+  const qualificationDefinitions = [
+    ["SUBJECT_LEAD", "Subject lead"],
+    ["TEACHING_SUPPORT", "Teaching support"],
+  ] as const;
+
+  const qualificationByCode: Record<string, { id: string }> = {};
+
+  for (const [code, name] of qualificationDefinitions) {
+    const qualification = await prisma.qualification.upsert({
+      where: {
+        tenantId_code: {
+          tenantId: tenant.id,
+          code,
+        },
+      },
+      update: {
+        name,
+        active: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        code,
+        name,
+      },
+    });
+
+    qualificationByCode[code] = qualification;
+  }
+
+  const instructorQualificationDefinitions = [
+    ["T1", "SUBJECT_LEAD", 3],
+    ["T1", "TEACHING_SUPPORT", 2],
+    ["T2", "TEACHING_SUPPORT", 2],
+  ] as const;
+
+  for (const [instructorExternalId, qualificationCode, level] of instructorQualificationDefinitions) {
+    await prisma.instructorQualification.upsert({
+      where: {
+        tenantId_instructorId_qualificationId: {
+          tenantId: tenant.id,
+          instructorId: instructorByExternalId[instructorExternalId].id,
+          qualificationId: qualificationByCode[qualificationCode].id,
+        },
+      },
+      update: {
+        level,
+        active: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        instructorId: instructorByExternalId[instructorExternalId].id,
+        qualificationId: qualificationByCode[qualificationCode].id,
+        level,
+      },
+    });
+  }
+
   const instructorCourses = [
     ["T1", "MAT", "PRIMARY", 100],
     ["T1", "FYS", "PRIMARY", 100],
@@ -392,6 +449,52 @@ async function main() {
       });
     }
   }
+
+  // Demo staffing rules. Physics requires both a qualified lead and an
+  // assisting teacher. The assistant may hold a lower qualification level.
+  const physicsGroup = teachingGroupByCode["G3"];
+  const physicsCourse = courseByCode["FYS"];
+
+  const existingPhysicsStaffing = await prisma.staffingRequirement.findMany({
+    where: {
+      tenantId: tenant.id,
+      OR: [
+        { teachingGroupId: physicsGroup.id },
+        { courseId: physicsCourse.id },
+      ],
+    },
+  });
+
+  for (const existing of existingPhysicsStaffing) {
+    await prisma.staffingRequirement.delete({ where: { id: existing.id } });
+  }
+
+  await prisma.staffingRequirement.createMany({
+    data: [
+      {
+        tenantId: tenant.id,
+        source: "COURSE",
+        courseId: physicsCourse.id,
+        role: "LEAD",
+        count: 1,
+        requiredQualificationId: qualificationByCode["SUBJECT_LEAD"].id,
+        minimumQualificationLevel: 2,
+        priority: 200,
+        hard: true,
+      },
+      {
+        tenantId: tenant.id,
+        source: "COURSE",
+        courseId: physicsCourse.id,
+        role: "ASSISTANT",
+        count: 1,
+        requiredQualificationId: qualificationByCode["TEACHING_SUPPORT"].id,
+        minimumQualificationLevel: 1,
+        priority: 180,
+        hard: true,
+      },
+    ],
+  });
 
   const teachingRequirementDefinitions = [
     ["G1", 1620, 90, 180],

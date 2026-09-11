@@ -10,6 +10,15 @@ class InstructorInput:
     name: str
     course_ids: tuple[str, ...]
     course_penalties: dict[str, int] = field(default_factory=dict)
+    qualification_levels: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StaffingRoleInput:
+    id: str
+    role: str
+    required_qualification_id: str | None = None
+    minimum_qualification_level: int | None = None
 
 
 @dataclass(frozen=True)
@@ -17,6 +26,7 @@ class RoomInput:
     id: str
     name: str
     capacity: int
+    staffing_roles: tuple[StaffingRoleInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -28,6 +38,7 @@ class TeachingGroupInput:
     allowed_room_ids: tuple[str, ...]
     room_penalties: dict[str, int] = field(default_factory=dict)
     instructor_penalties: dict[str, int] = field(default_factory=dict)
+    staffing_roles: tuple[StaffingRoleInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,6 +118,12 @@ class SolverInput:
 
 
 @dataclass(frozen=True)
+class StaffingAssignmentOutput:
+    role: str
+    instructor_id: str
+
+
+@dataclass(frozen=True)
 class ScheduledSessionOutput:
     teaching_group_id: str
     start_minute: int
@@ -115,6 +132,8 @@ class ScheduledSessionOutput:
     room_id: str
     date: str | None = None
     occurrence_id: str | None = None
+    instructor_ids: tuple[str, ...] = ()
+    staffing_assignments: tuple[StaffingAssignmentOutput, ...] = ()
 
 
 @dataclass(frozen=True)

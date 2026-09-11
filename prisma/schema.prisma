@@ -107,6 +107,19 @@ enum QualificationLevel {
   SUPPORT
 }
 
+enum StaffingRoleType {
+  LEAD
+  ASSISTANT
+  SUPPORT
+  OTHER
+}
+
+enum StaffingRequirementSource {
+  COURSE
+  TEACHING_GROUP
+  ROOM
+}
+
 enum RoomCourseSuitability {
   PREFERRED
   ALLOWED
@@ -171,6 +184,9 @@ model Tenant {
   roomCoursePreferences      RoomCoursePreference[]
   roomTravelTimes            RoomTravelTime[]
   instructorGroupPreferences InstructorTeachingGroupPreference[]
+  qualifications             Qualification[]
+  instructorQualifications   InstructorQualification[]
+  staffingRequirements       StaffingRequirement[]
   studentCourseRequirements  StudentCourseRequirement[]
   studentCohorts             StudentCohort[]
   studentCohortMembers       StudentCohortMember[]
@@ -330,11 +346,12 @@ model Room {
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   location Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
 
-  availabilities      RoomAvailability[]
-  planningExceptions  PlanningException[]
-  coursePreferences   RoomCoursePreference[]
-  outgoingTravelTimes RoomTravelTime[]       @relation("RoomTravelFrom")
-  incomingTravelTimes RoomTravelTime[]       @relation("RoomTravelTo")
+  availabilities       RoomAvailability[]
+  planningExceptions   PlanningException[]
+  coursePreferences    RoomCoursePreference[]
+  staffingRequirements StaffingRequirement[]
+  outgoingTravelTimes  RoomTravelTime[]       @relation("RoomTravelFrom")
+  incomingTravelTimes  RoomTravelTime[]       @relation("RoomTravelTo")
 
   sessions         Session[]
   scenarioSessions ScenarioSession[]
@@ -529,6 +546,7 @@ model Instructor {
   courses                  InstructorCourse[]
   locations                InstructorLocation[]
   teachingGroupPreferences InstructorTeachingGroupPreference[]
+  qualifications           InstructorQualification[]
 
   availabilities     InstructorAvailability[]
   planningExceptions PlanningException[]
@@ -566,11 +584,12 @@ model Course {
   createdAt               DateTime           @default(now())
   updatedAt               DateTime           @updatedAt
 
-  tenant          Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  instructors     InstructorCourse[]
-  requirements    StudentCourseRequirement[]
-  groups          TeachingGroup[]
-  roomPreferences RoomCoursePreference[]
+  tenant               Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructors          InstructorCourse[]
+  requirements         StudentCourseRequirement[]
+  groups               TeachingGroup[]
+  roomPreferences      RoomCoursePreference[]
+  staffingRequirements StaffingRequirement[]
 
   planningRules PlanningRule[]
 
@@ -692,6 +711,79 @@ model InstructorTeachingGroupPreference {
   @@index([tenantId, active, preference])
 }
 
+model Qualification {
+  id          String   @id @default(uuid())
+  tenantId    String
+  code        String
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructorQualifications InstructorQualification[]
+  staffingRequirements     StaffingRequirement[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, active])
+  @@index([tenantId, name])
+}
+
+model InstructorQualification {
+  id              String    @id @default(uuid())
+  tenantId        String
+  instructorId    String
+  qualificationId String
+  level           Int       @default(1)
+  validFrom       DateTime?
+  validTo         DateTime?
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instructor    Instructor    @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  qualification Qualification @relation(fields: [qualificationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, instructorId, qualificationId])
+  @@index([tenantId, instructorId, active])
+  @@index([tenantId, qualificationId, active])
+}
+
+model StaffingRequirement {
+  id                        String                    @id @default(uuid())
+  tenantId                  String
+  source                    StaffingRequirementSource
+  courseId                  String?
+  teachingGroupId           String?
+  roomId                    String?
+  role                      StaffingRoleType
+  count                     Int                       @default(1)
+  requiredQualificationId   String?
+  minimumQualificationLevel Int?
+  minimumStudentCount       Int?
+  priority                  Int                       @default(100)
+  hard                      Boolean                   @default(true)
+  active                    Boolean                   @default(true)
+  validFrom                 DateTime?
+  validTo                   DateTime?
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+
+  tenant                Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  course                Course?        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  teachingGroup         TeachingGroup? @relation(fields: [teachingGroupId], references: [id], onDelete: Cascade)
+  room                  Room?          @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  requiredQualification Qualification? @relation(fields: [requiredQualificationId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, source, active])
+  @@index([tenantId, courseId])
+  @@index([tenantId, teachingGroupId])
+  @@index([tenantId, roomId])
+  @@index([tenantId, requiredQualificationId])
+}
+
 model StudentCohort {
   id                 String            @id @default(uuid())
   tenantId           String
@@ -784,6 +876,7 @@ model TeachingGroup {
   students              TeachingGroupStudent[]
   teachingRequirements  TeachingRequirement[]
   instructorPreferences InstructorTeachingGroupPreference[]
+  staffingRequirements  StaffingRequirement[]
   planningExceptions    PlanningException[]
 
   planningRules PlanningRule[]

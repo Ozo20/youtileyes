@@ -3,7 +3,7 @@ import "dotenv/config";
 import { writeFile } from "node:fs/promises";
 import { prisma } from "../src/lib/prisma";
 
-const SCHEMA_VERSION = "1.2";
+const SCHEMA_VERSION = "1.3";
 const OUTPUT_PATH = "/tmp/youtileyes_solver_input.json";
 
 function clock(hour: number, minute: number): number {
@@ -110,7 +110,13 @@ async function main() {
 
   const rooms = await prisma.room.findMany({
     where: { tenantId: tenant.id, active: true },
-    include: { coursePreferences: { where: { active: true } } },
+    include: {
+      coursePreferences: { where: { active: true } },
+      staffingRequirements: {
+        where: { active: true, source: "ROOM" },
+        include: { requiredQualification: true },
+      },
+    },
     orderBy: { code: "asc" },
   });
 
@@ -118,6 +124,10 @@ async function main() {
     where: { tenantId: tenant.id, status: "ACTIVE" },
     include: {
       courses: { where: { active: true }, include: { course: true } },
+      qualifications: {
+        where: { active: true },
+        include: { qualification: true },
+      },
       teachingGroupPreferences: { where: { active: true } },
     },
     orderBy: { lastName: "asc" },
@@ -126,7 +136,18 @@ async function main() {
   const teachingGroups = await prisma.teachingGroup.findMany({
     where: { tenantId: tenant.id, status: "ACTIVE" },
     include: {
-      course: true,
+      course: {
+        include: {
+          staffingRequirements: {
+            where: { active: true, source: "COURSE" },
+            include: { requiredQualification: true },
+          },
+        },
+      },
+      staffingRequirements: {
+        where: { active: true, source: "TEACHING_GROUP" },
+        include: { requiredQualification: true },
+      },
       studentCohort: true,
       students: { include: { student: true } },
       instructorPreferences: { where: { active: true } },
@@ -400,8 +421,28 @@ async function main() {
       coursePenalties: Object.fromEntries(
         instructor.courses.map((link) => [link.course.id, qualificationPenalty(link.qualificationLevel)]),
       ),
+      qualificationLevels: Object.fromEntries(
+        instructor.qualifications.map((link) => [
+          link.qualification.id,
+          link.level,
+        ]),
+      ),
     })),
-    rooms: rooms.map((room) => ({ id: room.id, name: room.name, capacity: room.capacity })),
+    rooms: rooms.map((room) => ({
+      id: room.id,
+      name: room.name,
+      capacity: room.capacity,
+      staffingRoles: room.staffingRequirements
+        .filter((rule) => !rule.minimumStudentCount || rule.minimumStudentCount <= room.capacity)
+        .flatMap((rule) =>
+          Array.from({ length: rule.count }, (_, index) => ({
+            id: `${rule.id}:${index + 1}`,
+            role: rule.role,
+            requiredQualificationId: rule.requiredQualificationId,
+            minimumQualificationLevel: rule.minimumQualificationLevel,
+          })),
+        ),
+    })),
     teachingGroups: teachingGroups.map((group) => {
       const explicitPreferences = roomPreferenceByCourse.get(group.course.id);
       const allowedRoomIds: string[] = [];
@@ -427,6 +468,23 @@ async function main() {
         allowedRoomIds,
         roomPenalties,
         instructorPenalties: Object.fromEntries(instructorPreferenceByGroup.get(group.id) ?? []),
+        staffingRoles: [
+          ...group.course.staffingRequirements,
+          ...group.staffingRequirements,
+        ]
+          .filter(
+            (rule) =>
+              !rule.minimumStudentCount ||
+              rule.minimumStudentCount <= group.students.length,
+          )
+          .flatMap((rule) =>
+            Array.from({ length: rule.count }, (_, index) => ({
+              id: `${rule.id}:${index + 1}`,
+              role: rule.role,
+              requiredQualificationId: rule.requiredQualificationId,
+              minimumQualificationLevel: rule.minimumQualificationLevel,
+            })),
+          ),
       };
     }),
     calendarDays: calendarDays.map((day) => ({
