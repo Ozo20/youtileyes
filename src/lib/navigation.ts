@@ -1,5 +1,6 @@
 import {
   CalendarDays,
+  FileClock,
   GraduationCap,
   LayoutDashboard,
   MapPin,
@@ -38,6 +39,11 @@ export const portalNavigation = [
     label: "Planning",
     href: "/planning",
     icon: SlidersHorizontal,
+  },
+  {
+    label: "History",
+    href: "/history",
+    icon: FileClock,
   },
   {
     label: "Settings",

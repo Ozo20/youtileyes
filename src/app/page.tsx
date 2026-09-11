@@ -1,69 +1,335 @@
-import Image from "next/image";
+import Link from "next/link";
+import {
+  Activity,
+  CalendarClock,
+  FileCheck2,
+  GraduationCap,
+  School,
+  Sparkles,
+  Users,
+} from "lucide-react";
 
-export default function Home() {
+import { AuditEventList } from "@/components/audit/audit-event-list";
+import { AppShell } from "@/components/layout/app-shell";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+} from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { PageHeader } from "@/components/ui/page-header";
+import { StatCard } from "@/components/ui/stat-card";
+import { prisma } from "@/lib/prisma";
+
+const dateFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+export default async function HomePage() {
+  const tenant = await prisma.tenant.findUnique({
+    where: {
+      code: "DEMO",
+    },
+  });
+
+  if (!tenant) {
+    return (
+      <AppShell>
+        <div className="page-container">
+          <PageHeader
+            title="Overview"
+            description="No tenant is available."
+          />
+        </div>
+      </AppShell>
+    );
+  }
+
+  const plan = await prisma.plan.findFirst({
+    where: {
+      tenantId: tenant.id,
+      status: {
+        not: "ARCHIVED",
+      },
+    },
+    orderBy: {
+      version: "desc",
+    },
+    include: {
+      planningScope: true,
+      academicPeriod: true,
+    },
+  });
+
+  const asOfDate =
+    plan?.planningAsOfDate ?? new Date();
+
+  const [
+    latestScenario,
+    students,
+    instructors,
+    rooms,
+    pendingReviews,
+    upcomingExceptions,
+    recentEvents,
+  ] = await Promise.all([
+    prisma.planScenario.findFirst({
+      where: {
+        tenantId: tenant.id,
+        ...(plan ? { planId: plan.id } : {}),
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    }),
+    prisma.student.count({
+      where: {
+        tenantId: tenant.id,
+        status: "ACTIVE",
+      },
+    }),
+    prisma.instructor.count({
+      where: {
+        tenantId: tenant.id,
+        status: "ACTIVE",
+      },
+    }),
+    prisma.room.count({
+      where: {
+        tenantId: tenant.id,
+        active: true,
+      },
+    }),
+    prisma.planReviewStep.count({
+      where: {
+        tenantId: tenant.id,
+        status: {
+          in: ["PENDING", "READY", "IN_REVIEW"],
+        },
+      },
+    }),
+    prisma.planningException.count({
+      where: {
+        tenantId: tenant.id,
+        status: "ACTIVE",
+        endAt: {
+          gte: asOfDate,
+        },
+      },
+    }),
+    prisma.eventLog.findMany({
+      where: {
+        tenantId: tenant.id,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 8,
+    }),
+  ]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <AppShell>
+      <div className="page-container">
+        <PageHeader
+          title="Overview"
+          description={`${tenant.name} · planning and operational status`}
+          actions={
+            plan ? (
+              <Badge tone="info">
+                Plan v{plan.version} · {plan.status}
+              </Badge>
+            ) : null
+          }
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+
+        <div className="overview-stats">
+          <StatCard
+            label="Current plan"
+            value={plan ? `v${plan.version}` : "—"}
+            detail={
+              plan
+                ? `${plan.planningScope.name} · ${plan.status}`
+                : "No plan available"
+            }
+            icon={<CalendarClock size={17} />}
+            tone="info"
+          />
+
+          <StatCard
+            label="Latest scenario"
+            value={latestScenario?.status ?? "—"}
+            detail={
+              latestScenario?.name ??
+              "No generated scenario"
+            }
+            icon={<Sparkles size={17} />}
+            tone={
+              latestScenario?.status === "FAILED"
+                ? "danger"
+                : "success"
+            }
+          />
+
+          <StatCard
+            label="Pending review"
+            value={pendingReviews}
+            detail="Review steps requiring attention"
+            icon={<FileCheck2 size={17} />}
+            tone={pendingReviews > 0 ? "warning" : "neutral"}
+          />
+
+          <StatCard
+            label="Upcoming exceptions"
+            value={upcomingExceptions}
+            detail="Active exceptions from the planning as-of date"
+            icon={<Activity size={17} />}
+            tone={upcomingExceptions > 0 ? "warning" : "neutral"}
+          />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+
+        <div className="overview-grid">
+          <Card>
+            <CardHeader>
+              <div>
+                <span className="eyebrow">
+                  Planning horizon
+                </span>
+                <h2>
+                  {plan?.name ?? "No active plan"}
+                </h2>
+              </div>
+
+              {plan ? (
+                <Link
+                  href="/schedule?view=week"
+                  className="overview-link"
+                >
+                  Open schedule
+                </Link>
+              ) : null}
+            </CardHeader>
+
+            <CardContent>
+              {plan ? (
+                <dl className="overview-plan-grid">
+                  <div>
+                    <dt>As-of date</dt>
+                    <dd>
+                      {plan.planningAsOfDate
+                        ? dateFormatter.format(
+                            plan.planningAsOfDate,
+                          )
+                        : "—"}
+                    </dd>
+                  </div>
+
+                  <div>
+                    <dt>Frozen through</dt>
+                    <dd>
+                      {plan.frozenThroughDate
+                        ? dateFormatter.format(
+                            plan.frozenThroughDate,
+                          )
+                        : "—"}
+                    </dd>
+                  </div>
+
+                  <div>
+                    <dt>Editable from</dt>
+                    <dd>
+                      {plan.planningStartDate
+                        ? dateFormatter.format(
+                            plan.planningStartDate,
+                          )
+                        : "—"}
+                    </dd>
+                  </div>
+
+                  <div>
+                    <dt>Planning end</dt>
+                    <dd>
+                      {plan.planningEndDate
+                        ? dateFormatter.format(
+                            plan.planningEndDate,
+                          )
+                        : "—"}
+                    </dd>
+                  </div>
+                </dl>
+              ) : (
+                <EmptyState
+                  icon={<CalendarClock size={20} />}
+                  title="No planning horizon"
+                  description="Create a plan before generating schedules."
+                />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div>
+                <span className="eyebrow">
+                  Resources
+                </span>
+                <h2>Active master data</h2>
+              </div>
+            </CardHeader>
+
+            <CardContent>
+              <div className="resource-count-grid">
+                <div>
+                  <GraduationCap size={17} />
+                  <strong>{students}</strong>
+                  <span>Students</span>
+                </div>
+
+                <div>
+                  <Users size={17} />
+                  <strong>{instructors}</strong>
+                  <span>Instructors</span>
+                </div>
+
+                <div>
+                  <School size={17} />
+                  <strong>{rooms}</strong>
+                  <span>Rooms</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <div>
+              <span className="eyebrow">
+                Recent changes
+              </span>
+              <h2>Audit activity</h2>
+            </div>
+
+            <Link
+              href="/history"
+              className="overview-link"
+            >
+              View full history
+            </Link>
+          </CardHeader>
+
+          <CardContent className="history-list-content">
+            <AuditEventList
+              events={recentEvents}
+              baseHref="/history"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+          </CardContent>
+        </Card>
+      </div>
+    </AppShell>
   );
 }

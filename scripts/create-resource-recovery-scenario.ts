@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 
 import {
@@ -18,6 +19,7 @@ import {
   toPrismaJson,
   type RecoveryScenarioSession,
 } from "../src/lib/planning/recovery-scenario";
+import { writeAuditEvent } from "../src/lib/audit";
 import { prisma } from "../src/lib/prisma";
 
 const INPUT_PATH =
@@ -263,6 +265,8 @@ async function main() {
     disruption.endDate,
   );
 
+  const correlationId = randomUUID();
+
   const directChangeCount = changes.filter(
     (change) => change.direct,
   ).length;
@@ -395,23 +399,64 @@ async function main() {
       });
     }
 
-    await tx.eventLog.create({
-      data: {
-        tenantId: baseScenario.tenantId,
-        eventType: "UPDATED",
-        entityType: "PlanScenario",
-        entityId: created.id,
-        description:
-          `Recovery scenario generated for ${resourceLabel}: ` +
-          `${changes.length} session change(s), ` +
-          `${directChangeCount} direct, ${cascadingChangeCount} cascading.`,
-        metadata: toPrismaJson({
-          basedOnScenarioId: baseScenario.id,
-          disruption,
-          solverStatus: recoveredOutput.status,
-        }),
+    await writeAuditEvent(tx, {
+      tenantId: baseScenario.tenantId,
+      eventType: "GENERATED",
+      entityType: "PlanScenario",
+      entityId: created.id,
+      description:
+        `Recovery scenario generated for ${resourceLabel}: ` +
+        `${changes.length} session change(s), ` +
+        `${directChangeCount} direct, ${cascadingChangeCount} cascading.`,
+      source: "planning.resource-recovery",
+      correlationId,
+      planId: baseScenario.planId,
+      scenarioId: created.id,
+      beforeState: {
+        scenarioId: baseScenario.id,
+        scenarioName: baseScenario.name,
+      },
+      afterState: {
+        scenarioId: created.id,
+        scenarioName: created.name,
+        status: created.status,
+      },
+      context: {
+        basedOnScenarioId: baseScenario.id,
+        disruption,
+        solverStatus: recoveredOutput.status,
+        changedSessionCount: changes.length,
+        directChangeCount,
+        cascadingChangeCount,
       },
     });
+
+    for (const change of changes) {
+      await writeAuditEvent(tx, {
+        tenantId: baseScenario.tenantId,
+        eventType: "UPDATED",
+        entityType: "ScenarioSession",
+        entityId:
+          scenarioSessionByOccurrence.get(change.occurrenceId) ??
+          null,
+        description: change.direct
+          ? `Direct recovery change for occurrence ${change.occurrenceId}.`
+          : `Cascading recovery change for occurrence ${change.occurrenceId}.`,
+        source: "planning.resource-recovery",
+        correlationId,
+        planId: baseScenario.planId,
+        scenarioId: created.id,
+        beforeState: change.before,
+        afterState: change.after,
+        context: {
+          occurrenceId: change.occurrenceId,
+          teachingGroupId: change.teachingGroupId,
+          direct: change.direct,
+          changedFields: change.changedFields,
+          disruption,
+        },
+      });
+    }
 
     return created;
   });
