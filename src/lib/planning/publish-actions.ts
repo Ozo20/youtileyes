@@ -699,3 +699,291 @@ export async function publishRecoveryCase(formData: FormData) {
     `/planning?published=${result.planId}#change-publish`,
   );
 }
+
+
+export async function publishBasePlanRevision(formData: FormData) {
+  const planId = requiredText(formData, "planId");
+  const correlationId = randomUUID();
+
+  const publishedPlanId = await prisma.$transaction(
+    async (tx) => {
+      const plan = await tx.plan.findUnique({
+        where: { id: planId },
+        include: {
+          basedOnPlan: true,
+          reviewWorkflows: {
+            include: {
+              steps: true,
+            },
+            orderBy: { createdAt: "asc" },
+          },
+          scenarios: {
+            where: {
+              status: ScenarioStatus.ACCEPTED,
+              generationConfig: {
+                path: ["type"],
+                equals: "BASE_PLAN",
+              },
+            },
+            include: {
+              sessions: {
+                include: {
+                  instructors: true,
+                  students: true,
+                },
+                orderBy: [
+                  { date: "asc" },
+                  { startMinute: "asc" },
+                ],
+              },
+            },
+          },
+          _count: {
+            select: { sessions: true },
+          },
+        },
+      });
+
+      if (!plan) {
+        throw new Error("Plan not found.");
+      }
+
+      if (plan.status === PlanStatus.PUBLISHED) {
+        return plan.id;
+      }
+
+      if (plan.status !== PlanStatus.APPROVED) {
+        throw new Error(
+          `Plan ${plan.name} v${plan.version} must be APPROVED before publication. Current status: ${plan.status}.`,
+        );
+      }
+
+      const workflow = plan.reviewWorkflows[0] ?? null;
+
+      if (!workflow || workflow.status !== "APPROVED") {
+        throw new Error(
+          "The Base Plan review workflow must be fully approved before publication.",
+        );
+      }
+
+      if (
+        workflow.steps.some(
+          (step) => step.required && step.status !== "APPROVED",
+        )
+      ) {
+        throw new Error(
+          "One or more required Base Plan review steps are not approved.",
+        );
+      }
+
+      if (plan.scenarios.length !== 1) {
+        throw new Error(
+          `Plan ${plan.name} v${plan.version} requires exactly one accepted Base Plan proposal before publication. Found ${plan.scenarios.length}.`,
+        );
+      }
+
+      const scenario = plan.scenarios[0];
+
+      if (scenario.sessions.length === 0) {
+        throw new Error(
+          "The accepted Base Plan proposal contains no sessions to publish.",
+        );
+      }
+
+      if (plan._count.sessions > 0) {
+        throw new Error(
+          "This Plan revision already contains official sessions and cannot be materialised again.",
+        );
+      }
+
+      const newerPlan = await tx.plan.findFirst({
+        where: {
+          tenantId: plan.tenantId,
+          planningScopeId: plan.planningScopeId,
+          version: { gt: plan.version },
+          status: { not: PlanStatus.ARCHIVED },
+        },
+        select: { version: true, status: true },
+        orderBy: { version: "desc" },
+      });
+
+      if (newerPlan) {
+        throw new Error(
+          `Plan v${newerPlan.version} already exists for this planning scope. Publish or resolve the newer revision instead.`,
+        );
+      }
+
+      if (
+        plan.basedOnPlan &&
+        plan.basedOnPlan.status !== PlanStatus.PUBLISHED
+      ) {
+        throw new Error(
+          `The predecessor Plan v${plan.basedOnPlan.version} is ${plan.basedOnPlan.status}, not PUBLISHED.`,
+        );
+      }
+
+      const now = new Date();
+      const effectiveFrom =
+        plan.effectiveFrom ??
+        plan.planningStartDate ??
+        now;
+
+      // Generate official Session ids up front so the complete Base Plan can
+      // be materialised with createMany rather than thousands of sequential
+      // nested writes inside one transaction.
+      const sessionRows = scenario.sessions.map((source) => ({
+        id: randomUUID(),
+        tenantId: plan.tenantId,
+        planId: plan.id,
+        teachingGroupId: source.teachingGroupId,
+        roomId: source.roomId,
+        date: source.date,
+        startMinute: source.startMinute,
+        endMinute: source.endMinute,
+        status: "PLANNED" as const,
+        origin: "GENERATED" as const,
+        locked: source.locked,
+        changeReason:
+          source.changeReason ??
+          `Published from ${scenario.name}.`,
+      }));
+
+      const sessionIdByScenarioSessionId = new Map(
+        scenario.sessions.map((source, index) => [
+          source.id,
+          sessionRows[index].id,
+        ]),
+      );
+
+      const instructorRows = scenario.sessions.flatMap((source) => {
+        const sessionId = sessionIdByScenarioSessionId.get(source.id)!;
+        return source.instructors.map((assignment) => ({
+          tenantId: plan.tenantId,
+          sessionId,
+          instructorId: assignment.instructorId,
+          role: assignment.role,
+        }));
+      });
+
+      const studentRows = scenario.sessions.flatMap((source) => {
+        const sessionId = sessionIdByScenarioSessionId.get(source.id)!;
+        return source.students.map((membership) => ({
+          tenantId: plan.tenantId,
+          sessionId,
+          studentId: membership.studentId,
+        }));
+      });
+
+      for (let offset = 0; offset < sessionRows.length; offset += 500) {
+        await tx.session.createMany({
+          data: sessionRows.slice(offset, offset + 500),
+        });
+      }
+
+      for (let offset = 0; offset < instructorRows.length; offset += 1000) {
+        await tx.sessionInstructor.createMany({
+          data: instructorRows.slice(offset, offset + 1000),
+        });
+      }
+
+      for (let offset = 0; offset < studentRows.length; offset += 1000) {
+        await tx.sessionStudent.createMany({
+          data: studentRows.slice(offset, offset + 1000),
+        });
+      }
+
+      const publishedPlan = await tx.plan.update({
+        where: { id: plan.id },
+        data: {
+          status: PlanStatus.PUBLISHED,
+          effectiveFrom,
+          publishedAt: now,
+        },
+      });
+
+      if (plan.basedOnPlan) {
+        const predecessorEffectiveTo = addUtcDays(effectiveFrom, -1);
+
+        const supersededPlan = await tx.plan.update({
+          where: { id: plan.basedOnPlan.id },
+          data: {
+            status: PlanStatus.SUPERSEDED,
+            effectiveTo: predecessorEffectiveTo,
+            supersededAt: now,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          tenantId: plan.tenantId,
+          eventType: "SUPERSEDED",
+          entityType: "Plan",
+          entityId: supersededPlan.id,
+          actor: DEMO_ACTOR,
+          description: `Plan v${plan.basedOnPlan.version} superseded by published Base Plan v${plan.version}.`,
+          source: "planning.base-plan.publish",
+          correlationId,
+          planId: supersededPlan.id,
+          scenarioId: scenario.id,
+          beforeState: {
+            status: plan.basedOnPlan.status,
+            effectiveTo: plan.basedOnPlan.effectiveTo,
+          },
+          afterState: {
+            status: supersededPlan.status,
+            effectiveTo: supersededPlan.effectiveTo,
+            supersededAt: supersededPlan.supersededAt,
+          },
+          context: {
+            successorPlanId: plan.id,
+            successorPlanVersion: plan.version,
+          },
+        });
+      }
+
+      await writeAuditEvent(tx, {
+        tenantId: plan.tenantId,
+        eventType: "PUBLISHED",
+        entityType: "Plan",
+        entityId: publishedPlan.id,
+        actor: DEMO_ACTOR,
+        description: `Base Plan v${plan.version} published with ${sessionRows.length} sessions.`,
+        source: "planning.base-plan.publish",
+        correlationId,
+        planId: publishedPlan.id,
+        scenarioId: scenario.id,
+        beforeState: {
+          status: plan.status,
+          officialSessionCount: plan._count.sessions,
+        },
+        afterState: {
+          status: publishedPlan.status,
+          effectiveFrom: publishedPlan.effectiveFrom,
+          publishedAt: publishedPlan.publishedAt,
+          officialSessionCount: sessionRows.length,
+        },
+        context: {
+          sourceScenarioId: scenario.id,
+          sourceScenarioName: scenario.name,
+          predecessorPlanId: plan.basedOnPlanId,
+          predecessorPlanVersion: plan.basedOnPlan?.version ?? null,
+          instructorAssignmentCount: instructorRows.length,
+          studentMembershipCount: studentRows.length,
+        },
+      });
+
+      return publishedPlan.id;
+    },
+    {
+      maxWait: 10_000,
+      timeout: 60_000,
+    },
+  );
+
+  revalidatePath("/");
+  revalidatePath("/planning");
+  revalidatePath("/planning/base-plan");
+  revalidatePath("/planning/revisions");
+  revalidatePath("/schedule");
+  revalidatePath("/history");
+  redirect(`/planning?published=${publishedPlanId}`);
+}

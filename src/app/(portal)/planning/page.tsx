@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 
 import { BasePlanGenerationStatus } from "@/components/planning/base-plan-generation-status";
+import { BasePlanPublishPanel } from "@/components/planning/base-plan-publish-panel";
+import { BasePlanWorkflowStepper } from "@/components/planning/base-plan-workflow-stepper";
 import { PlanningReviewPanel } from "@/components/planning/planning-review-panel";
 import { RecoveryApprovalPanel } from "@/components/planning/recovery-approval-panel";
 import { RecoveryPublishPanel } from "@/components/planning/recovery-publish-panel";
@@ -457,15 +459,28 @@ export default async function PlanningPage({
       )
       ?.scenario.id;
 
-  const selectedScenarioId =
-    params.scenario ??
-    currentRecoveryCaseScenarioId ??
-    scenarios.find(
-      (scenario) =>
-        generationType(scenario.generationConfig) ===
-        "RESOURCE_RECOVERY",
-    )?.id ??
-    scenarios[0]?.id;
+  const requestedScenario = params.scenario
+    ? scenarios.find((scenario) => scenario.id === params.scenario) ?? null
+    : null;
+
+  const selectedScenarioId = ["DRAFT", "GENERATED", "SUBMITTED", "IN_REVIEW", "REVIEWED", "APPROVED"].includes(plan.status)
+    ? (requestedScenario &&
+        generationType(requestedScenario.generationConfig) === "BASE_PLAN"
+        ? requestedScenario.id
+        : scenarios.find(
+            (scenario) =>
+              generationType(scenario.generationConfig) === "BASE_PLAN" &&
+              scenario.status === "ACCEPTED",
+          )?.id ??
+          scenarios.find(
+            (scenario) => generationType(scenario.generationConfig) === "BASE_PLAN",
+          )?.id)
+    : params.scenario ??
+      currentRecoveryCaseScenarioId ??
+      scenarios.find(
+        (scenario) => generationType(scenario.generationConfig) === "RESOURCE_RECOVERY",
+      )?.id ??
+      scenarios[0]?.id;
 
   const selectedScenario = selectedScenarioId
     ? await prisma.planScenario.findFirst({
@@ -521,6 +536,14 @@ export default async function PlanningPage({
     : null;
 
   const workflow = plan.reviewWorkflows[0] ?? null;
+  const basePlanLifecycleActive = [
+    "DRAFT",
+    "GENERATED",
+    "SUBMITTED",
+    "IN_REVIEW",
+    "REVIEWED",
+    "APPROVED",
+  ].includes(plan.status);
   const basePlanGenerationActive = Boolean(
     basePlanJob &&
       (basePlanJob.status === "QUEUED" ||
@@ -578,6 +601,25 @@ export default async function PlanningPage({
       name: scenario.name,
       status: scenario.status,
     }));
+
+  const acceptedBasePlanScenario = scenarios.find(
+    (scenario) =>
+      scenario.status === "ACCEPTED" &&
+      generationType(scenario.generationConfig) === "BASE_PLAN",
+  ) ?? null;
+
+  const basePlanScenarios = scenarios.filter(
+    (scenario) => generationType(scenario.generationConfig) === "BASE_PLAN",
+  );
+  const visibleScenarios = basePlanLifecycleActive ? basePlanScenarios : scenarios;
+  const hasBasePlanProposal = basePlanScenarios.some((scenario) =>
+    ["GENERATED", "ACCEPTED"].includes(scenario.status),
+  );
+  const showBasePlanApproval =
+    Boolean(acceptedBasePlanScenario) ||
+    ["SUBMITTED", "IN_REVIEW", "REVIEWED", "APPROVED"].includes(plan.status);
+  const selectedScenarioIsBasePlan =
+    generationType(selectedScenario?.generationConfig) === "BASE_PLAN";
 
   const instructorNames = Object.fromEntries(
     instructors.map((instructor) => [
@@ -788,9 +830,11 @@ export default async function PlanningPage({
         />
 
         <StatCard
-          label="Scenarios"
-          value={scenarios.length}
-          detail={`${scenarios.filter((scenario) => scenario.status === "GENERATED").length} generated proposals`}
+          label={basePlanLifecycleActive ? "Base Plan proposals" : "Scenarios"}
+          value={basePlanLifecycleActive ? basePlanScenarios.length : scenarios.length}
+          detail={basePlanLifecycleActive
+            ? `${basePlanScenarios.filter((scenario) => scenario.status === "GENERATED").length} ready · ${basePlanScenarios.filter((scenario) => scenario.status === "ACCEPTED").length} accepted`
+            : `${scenarios.filter((scenario) => scenario.status === "GENERATED").length} generated proposals`}
           icon={<Sparkles size={17} />}
           tone="info"
         />
@@ -808,8 +852,17 @@ export default async function PlanningPage({
         />
       </div>
 
+      {basePlanLifecycleActive ? (
+        <BasePlanWorkflowStepper
+          planStatus={plan.status}
+          hasRequirements={Boolean(feasibility?.requirements.length)}
+          hasProposal={hasBasePlanProposal}
+          proposalAccepted={Boolean(acceptedBasePlanScenario)}
+        />
+      ) : null}
+
       <div className="planning-primary-grid">
-        <Card>
+        <Card id="base-plan-define">
           <CardHeader>
             <div>
               <span className="eyebrow">Current plan</span>
@@ -854,9 +907,9 @@ export default async function PlanningPage({
               <div>
                 <strong>Controlled revision principle</strong>
                 <span>
-                  Dates before the frozen boundary remain untouched.
-                  Generated recovery scenarios are proposals and do not
-                  overwrite the current plan.
+                  {basePlanLifecycleActive
+                    ? `Base Plan v${plan.version} remains isolated until approval and publication. Generated proposals do not overwrite the currently published revision${publishedPlan ? ` v${publishedPlan.version}` : ""}.`
+                    : "Dates before the frozen boundary remain untouched. Recovery proposals do not overwrite the current published plan."}
                 </span>
               </div>
             </div>
@@ -864,7 +917,7 @@ export default async function PlanningPage({
             {["DRAFT", "GENERATED", "REVIEWED"].includes(
               plan.status,
             ) ? (
-              <div className="planning-scenario-actions">
+              <div id="base-plan-calculate" className="planning-scenario-actions">
                 <div>
                   <CalendarClock size={16} />
                   <span>
@@ -923,7 +976,13 @@ export default async function PlanningPage({
                 No active teaching requirements were found.
               </p>
             ) : (
-              feasibility.requirements.map((requirement) => (
+              <details className="planning-feasibility-details">
+                <summary>
+                  {feasibility.counts.RED > 0 || feasibility.counts.AMBER > 0
+                    ? `Show all ${feasibility.requirements.length} requirement details · ${feasibility.counts.RED} red · ${feasibility.counts.AMBER} amber`
+                    : `All ${feasibility.requirements.length} requirements are within estimated capacity · show details`}
+                </summary>
+                {feasibility.requirements.map((requirement) => (
                 <div
                   key={requirement.requirementId}
                   className="planning-feasibility-row"
@@ -975,7 +1034,8 @@ export default async function PlanningPage({
                     <p>{requirement.reasons[0]}</p>
                   ) : null}
                 </div>
-              ))
+              ))}
+              </details>
             )}
           </CardContent>
         </Card>
@@ -1002,6 +1062,8 @@ export default async function PlanningPage({
         />
       ) : null}
 
+      {!basePlanLifecycleActive ? (
+        <>
       <RecoveryWorkflowStepper
         hasCase={Boolean(selectedRecoveryCase)}
         disruptionCount={
@@ -1053,26 +1115,29 @@ export default async function PlanningPage({
         </details>
       ) : null}
 
-      <div id="change-review" className="planning-scenario-workspace planning-anchor-section">
+        </>
+      ) : null}
+
+      <div id={basePlanLifecycleActive ? "base-plan-review" : "change-review"} className="planning-scenario-workspace planning-anchor-section">
         <Card className="planning-scenario-list-card">
           <CardHeader>
             <div>
-              <span className="eyebrow">Scenarios</span>
-              <h2>Alternatives & recovery</h2>
+              <span className="eyebrow">{basePlanLifecycleActive ? "Base Plan" : "Scenarios"}</span>
+              <h2>{basePlanLifecycleActive ? "Base Plan proposals" : "Alternatives & recovery"}</h2>
             </div>
 
             <Badge tone="neutral">
-              {scenarios.length}
+              {visibleScenarios.length}
             </Badge>
           </CardHeader>
 
           <CardContent className="planning-scenario-list">
-            {scenarios.length === 0 ? (
+            {visibleScenarios.length === 0 ? (
               <p className="planning-muted">
                 No scenarios have been created.
               </p>
             ) : (
-              scenarios.map((scenario) => {
+              visibleScenarios.map((scenario) => {
                 const direct = scenario.changes.filter(
                   (change) =>
                     change.explanationCode ===
@@ -1127,7 +1192,7 @@ export default async function PlanningPage({
                 <CardHeader>
                   <div>
                     <span className="eyebrow">
-                      Scenario detail
+                      {selectedScenarioIsBasePlan ? "Base Plan proposal" : "Scenario detail"}
                     </span>
                     <h2>{scenarioHeading}</h2>
                     {scenarioPeriod ? (
@@ -1206,9 +1271,9 @@ export default async function PlanningPage({
                       <div>
                         <ShieldCheck size={16} />
                         <span>
-                          Review the affected sessions and impact before
-                          deciding whether this recovery proposal should
-                          continue.
+                          {selectedScenarioIsBasePlan
+                            ? "Review the generated timetable before selecting it as the Base Plan proposal for this revision."
+                            : "Review the affected sessions and impact before deciding whether this recovery proposal should continue."}
                         </span>
                       </div>
 
@@ -1253,11 +1318,13 @@ export default async function PlanningPage({
                 </div>
               ) : null}
 
-              <ScenarioComparison
-                changes={selectedScenario.changes}
-                instructorNames={instructorNames}
-                roomNames={roomNames}
-              />
+              {!selectedScenarioIsBasePlan ? (
+                <ScenarioComparison
+                  changes={selectedScenario.changes}
+                  instructorNames={instructorNames}
+                  roomNames={roomNames}
+                />
+              ) : null}
             </>
           ) : (
             <Card>
@@ -1271,6 +1338,8 @@ export default async function PlanningPage({
         </div>
       </div>
 
+      {!basePlanLifecycleActive ? (
+        <>
       <RecoveryApprovalPanel
         tenantId={tenant.id}
         tenantApprovalRequired={
@@ -1313,14 +1382,33 @@ export default async function PlanningPage({
         />
       ) : null}
 
-      <details className="planning-current-plan-review">
-        <summary>Current plan approval history</summary>
-        <PlanningReviewPanel
-          planId={plan.id}
-          planStatus={plan.status}
-          workflow={workflow}
-        />
-      </details>
+        </>
+      ) : null}
+
+      {basePlanLifecycleActive && showBasePlanApproval ? (
+        <div id="base-plan-approval" className="planning-anchor-section">
+          <PlanningReviewPanel
+            planId={plan.id}
+            planStatus={plan.status}
+            workflow={workflow}
+          />
+        </div>
+      ) : null}
+
+      {basePlanLifecycleActive ? (
+        <div id="base-plan-publish" className="planning-anchor-section">
+          <BasePlanPublishPanel
+            planId={plan.id}
+            planVersion={plan.version}
+            planStatus={plan.status}
+            scenarioName={acceptedBasePlanScenario?.name ?? null}
+            sessionCount={acceptedBasePlanScenario?.sessions.length ?? 0}
+            predecessorVersion={
+              revisionHistory.find((revision) => revision.id === plan.basedOnPlanId)?.version ?? null
+            }
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

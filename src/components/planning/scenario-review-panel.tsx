@@ -164,11 +164,16 @@ export function ScenarioReviewPanel({
     }
   }
 
-  const disruption = disruptionInfo(
-    scenario.generationConfig,
-    instructorNames,
-    roomNames,
-  );
+  const config = jsonRecord(scenario.generationConfig);
+  const scenarioType = stringValue(config, "type");
+  const isBasePlan = scenarioType === "BASE_PLAN";
+  const disruption = isBasePlan
+    ? { subject: scenario.name, period: null }
+    : disruptionInfo(
+        scenario.generationConfig,
+        instructorNames,
+        roomNames,
+      );
 
   const solverOkay =
     solverStatus === "OPTIMAL" || solverStatus === "FEASIBLE";
@@ -195,17 +200,17 @@ export function ScenarioReviewPanel({
           <div>
             <strong>Review exactly what you are accepting</strong>
             <span>
-              Accepting selects this recovery scenario as the proposal to
-              continue with. It does not publish it or overwrite the current
-              plan.
+              {isBasePlan
+                ? "Accepting selects this generated timetable as the controlled Base Plan proposal for the revision. It does not publish the plan."
+                : "Accepting selects this recovery scenario as the proposal to continue with. It does not publish it or overwrite the current plan."}
             </span>
           </div>
         </div>
 
         <div className="planning-impact-grid">
           <div>
-            <span>Sessions changed</span>
-            <strong>{scenario.changes.length}</strong>
+            <span>{isBasePlan ? "Generated sessions" : "Sessions changed"}</span>
+            <strong>{isBasePlan ? scenario.sessionCount : scenario.changes.length}</strong>
           </div>
           <div>
             <span>Direct changes</span>
@@ -265,9 +270,9 @@ export function ScenarioReviewPanel({
         <div className="planning-decision-warning">
           <strong>What Accept means</strong>
           <p>
-            The scenario moves from GENERATED to ACCEPTED. The current plan
-            remains unchanged. Publishing an accepted scenario will be a
-            separate controlled step with its own review and audit trail.
+            The scenario moves from GENERATED to ACCEPTED. {isBasePlan
+              ? "The Plan revision remains GENERATED until it is submitted, approved and published through the controlled lifecycle."
+              : "The current plan remains unchanged. Publishing an accepted scenario will be a separate controlled step with its own review and audit trail."}
           </p>
         </div>
 
