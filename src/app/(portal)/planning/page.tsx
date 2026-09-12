@@ -8,6 +8,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 
+import { BasePlanGenerationStatus } from "@/components/planning/base-plan-generation-status";
 import { PlanningReviewPanel } from "@/components/planning/planning-review-panel";
 import { RecoveryApprovalPanel } from "@/components/planning/recovery-approval-panel";
 import { RecoveryPublishPanel } from "@/components/planning/recovery-publish-panel";
@@ -244,6 +245,7 @@ export default async function PlanningPage({
     instructors,
     rooms,
     recentJobs,
+    basePlanJob,
     recoveryCases,
     teachingGroups,
   ] = await Promise.all([
@@ -339,6 +341,29 @@ export default async function PlanningPage({
         queuedAt: "desc",
       },
       take: 8,
+    }),
+    prisma.solverJob.findFirst({
+      where: {
+        tenantId: tenant.id,
+        planScenario: {
+          planId: plan.id,
+          generationConfig: {
+            path: ["type"],
+            equals: "BASE_PLAN",
+          },
+        },
+      },
+      include: {
+        planScenario: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        queuedAt: "desc",
+      },
     }),
     prisma.recoveryCase.findMany({
       where: {
@@ -496,6 +521,11 @@ export default async function PlanningPage({
     : null;
 
   const workflow = plan.reviewWorkflows[0] ?? null;
+  const basePlanGenerationActive = Boolean(
+    basePlanJob &&
+      (basePlanJob.status === "QUEUED" ||
+        basePlanJob.status === "RUNNING"),
+  );
 
   const directChanges =
     selectedScenario?.changes.filter(
@@ -850,10 +880,18 @@ export default async function PlanningPage({
                     name="planId"
                     value={plan.id}
                   />
-                  <Button type="submit" variant="primary">
-                    Generate Base Plan proposal
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={basePlanGenerationActive}
+                  >
+                    {basePlanGenerationActive
+                      ? "Generation in progress"
+                      : "Generate Base Plan proposal"}
                   </Button>
                 </form>
+
+                <BasePlanGenerationStatus job={basePlanJob} />
               </div>
             ) : null}
 

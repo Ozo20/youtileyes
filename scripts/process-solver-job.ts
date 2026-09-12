@@ -1,16 +1,38 @@
 import "dotenv/config";
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 import {
+  PlanStatus,
+  Prisma,
+  ScenarioStatus,
   SolverJobStatus,
   SolverRunStatus,
+  StaffingRoleType,
 } from "../src/generated/prisma/client";
 
 import { writeAuditEvent } from "../src/lib/audit";
 import { prisma } from "../src/lib/prisma";
+
+type JobProgress = {
+  phase?: string;
+  phaseLabel?: string;
+  percent?: number;
+  currentWeek?: number;
+  totalWeeks?: number | null;
+  weekStartDate?: string | null;
+  message?: string;
+  candidateCount?: number;
+  selectorCount?: number;
+  candidateSeconds?: number;
+  modelSeconds?: number;
+  instructorTravelConstraints?: number;
+  studentBreakConstraints?: number;
+  updatedAt?: string;
+};
 
 type RecoveryJobConfig = {
   schemaVersion?: string;
@@ -24,6 +46,43 @@ type RecoveryJobConfig = {
   endDate?: string;
   correlationId?: string;
   requestedByName?: string;
+  progress?: JobProgress;
+};
+
+type BasePlanJobConfig = RecoveryJobConfig & {
+  planVersion?: number;
+  scenarioId?: string;
+  inputFingerprint?: string;
+};
+
+type SolverSession = {
+  teaching_group_id: string;
+  start_minute: number;
+  end_minute: number;
+  instructor_id: string;
+  room_id: string;
+  date: string | null;
+  occurrence_id?: string | null;
+  instructor_ids?: string[];
+  staffing_assignments?: Array<{
+    role: string;
+    instructor_id: string;
+  }>;
+};
+
+type SolverOutput = {
+  schema_version: string;
+  tenant_id: string;
+  plan_scenario_id: string;
+  status: string;
+  objective_value: number | null;
+  sessions: SolverSession[];
+  metrics?: Array<{
+    key: string;
+    value: number;
+    unit?: string | null;
+  }>;
+  diagnostics?: Record<string, unknown>;
 };
 
 type RecoveryReport = {
@@ -60,10 +119,10 @@ function asConfig(value: unknown): RecoveryJobConfig {
 }
 
 function requireConfig(
-  config: RecoveryJobConfig,
-  key: keyof RecoveryJobConfig,
+  config: object,
+  key: string,
 ) {
-  const value = config[key];
+  const value = (config as Record<string, unknown>)[key];
 
   if (typeof value !== "string" || !value) {
     throw new Error(`Solver job config is missing ${key}.`);
@@ -77,6 +136,7 @@ async function runCommand(
   args: string[],
   options?: {
     env?: NodeJS.ProcessEnv;
+    onStdoutLine?: (line: string) => void | Promise<void>;
   },
 ) {
   return await new Promise<{
@@ -91,9 +151,24 @@ async function runCommand(
 
     let stdout = "";
     let stderr = "";
+    let stdoutBuffer = "";
+    let lineWork = Promise.resolve();
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+
+      if (!options?.onStdoutLine) return;
+
+      stdoutBuffer += text;
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        lineWork = lineWork.then(async () => {
+          await options.onStdoutLine?.(line);
+        });
+      }
     });
 
     child.stderr.on("data", (chunk) => {
@@ -102,18 +177,30 @@ async function runCommand(
 
     child.on("error", reject);
 
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
+    child.on("close", (code, signal) => {
+      void (async () => {
+        if (options?.onStdoutLine && stdoutBuffer) {
+          await lineWork;
+          await options.onStdoutLine(stdoutBuffer);
+        } else {
+          await lineWork;
+        }
 
-      reject(
-        new Error(
-          `${command} ${args.join(" ")} failed with exit code ${code}.\n` +
-            `${stderr || stdout}`,
-        ),
-      );
+        if (code === 0) {
+          resolve({ stdout, stderr });
+          return;
+        }
+
+        reject(
+          new Error(
+            `${command} ${args.join(" ")} failed with ` +
+              (signal
+                ? `signal ${signal}`
+                : `exit code ${code}`) +
+              `.\n${stderr || stdout}`,
+          ),
+        );
+      })().catch(reject);
     });
   });
 }
@@ -130,6 +217,700 @@ function tail(value: string, length = 6000) {
   return value.length <= length
     ? value
     : value.slice(value.length - length);
+}
+
+
+function dateValue(value: string) {
+  return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+}
+
+function staffingRole(value: string): StaffingRoleType {
+  if (
+    value === StaffingRoleType.LEAD ||
+    value === StaffingRoleType.ASSISTANT ||
+    value === StaffingRoleType.SUPPORT ||
+    value === StaffingRoleType.OTHER
+  ) {
+    return value;
+  }
+
+  return StaffingRoleType.OTHER;
+}
+
+function progressRecord(value: unknown): JobProgress {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return value as JobProgress;
+}
+
+async function ensureReviewWorkflow(
+  tx: Prisma.TransactionClient,
+  plan: {
+    id: string;
+    tenantId: string;
+    planningScopeId: string;
+    version: number;
+  },
+) {
+  const existing = await tx.planReviewWorkflow.findFirst({
+    where: {
+      tenantId: plan.tenantId,
+      planId: plan.id,
+    },
+  });
+
+  if (existing) return existing;
+
+  const templatePlan = await tx.plan.findFirst({
+    where: {
+      tenantId: plan.tenantId,
+      planningScopeId: plan.planningScopeId,
+      id: {
+        not: plan.id,
+      },
+      reviewWorkflows: {
+        some: {},
+      },
+    },
+    orderBy: {
+      version: "desc",
+    },
+    include: {
+      reviewWorkflows: {
+        include: {
+          steps: {
+            orderBy: [
+              { stage: "asc" },
+              { position: "asc" },
+            ],
+          },
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+        take: 1,
+      },
+    },
+  });
+
+  const template = templatePlan?.reviewWorkflows[0];
+
+  if (!template) {
+    throw new Error(
+      `No review workflow template exists for planning scope. ` +
+        `Cannot prepare Base Plan v${plan.version} for controlled review.`,
+    );
+  }
+
+  return tx.planReviewWorkflow.create({
+    data: {
+      tenantId: plan.tenantId,
+      planId: plan.id,
+      name: template.name,
+      status: "DRAFT",
+      steps: {
+        create: template.steps.map((step) => ({
+          tenantId: plan.tenantId,
+          stage: step.stage,
+          position: step.position,
+          name: step.name,
+          reviewerRole: step.reviewerRole,
+          reviewerId: step.reviewerId,
+          reviewerName: null,
+          required: step.required,
+          status: "PENDING",
+        })),
+      },
+    },
+  });
+}
+
+async function processBasePlanJob(jobId: string) {
+  const job = await prisma.solverJob.findUnique({
+    where: {
+      id: jobId,
+    },
+    include: {
+      planScenario: {
+        include: {
+          plan: true,
+        },
+      },
+    },
+  });
+
+  if (!job) {
+    throw new Error(`SolverJob ${jobId} was not found.`);
+  }
+
+  if (job.status !== SolverJobStatus.QUEUED) {
+    console.log(
+      `SolverJob ${job.id} is ${job.status}; nothing to process.`,
+    );
+    return;
+  }
+
+  const config = asConfig(job.config) as BasePlanJobConfig;
+  const plan = job.planScenario.plan;
+  const scenario = job.planScenario;
+  const correlationId = config.correlationId ?? randomUUID();
+  const inputFingerprint = requireConfig(
+    config,
+    "inputFingerprint",
+  );
+  const startedAt = new Date();
+  const inputPath = `/tmp/youtileyes_base_plan_input_${job.id}.json`;
+  const outputPath = `/tmp/youtileyes_base_plan_output_${job.id}.json`;
+
+  let currentConfig: BasePlanJobConfig = {
+    ...config,
+  };
+
+  const updateProgress = async (
+    patch: JobProgress,
+  ) => {
+    const previous = progressRecord(currentConfig.progress);
+    const progress: JobProgress = {
+      ...previous,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+
+    currentConfig = {
+      ...currentConfig,
+      progress,
+    };
+
+    await prisma.solverJob.update({
+      where: {
+        id: job.id,
+      },
+      data: {
+        config: JSON.parse(
+          JSON.stringify(currentConfig),
+        ) as Prisma.InputJsonValue,
+      },
+    });
+  };
+
+  const run = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.solverJob.updateMany({
+      where: {
+        id: job.id,
+        status: SolverJobStatus.QUEUED,
+      },
+      data: {
+        status: SolverJobStatus.RUNNING,
+        startedAt,
+        failureMessage: null,
+      },
+    });
+
+    if (claimed.count !== 1) {
+      throw new Error(
+        `SolverJob ${job.id} could not be claimed atomically.`,
+      );
+    }
+
+    const createdRun = await tx.solverRun.create({
+      data: {
+        tenantId: job.tenantId,
+        solverJobId: job.id,
+        status: SolverRunStatus.STARTED,
+        solverName: "OR-Tools CP-SAT",
+        solverVersion: "9.15.6755",
+        startedAt,
+        diagnostics: {
+          jobType: "BASE_PLAN",
+          planId: plan.id,
+          planVersion: plan.version,
+          scenarioId: scenario.id,
+          inputFingerprint,
+        },
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      tenantId: job.tenantId,
+      eventType: "UPDATED",
+      entityType: "SolverJob",
+      entityId: job.id,
+      description:
+        `Base Plan solver job started for v${plan.version}.`,
+      source: "planning.base-plan.worker",
+      correlationId,
+      planId: plan.id,
+      scenarioId: scenario.id,
+      beforeState: {
+        status: SolverJobStatus.QUEUED,
+      },
+      afterState: {
+        status: SolverJobStatus.RUNNING,
+        runId: createdRun.id,
+      },
+    });
+
+    return createdRun;
+  });
+
+  let buildStdout = "";
+  let solverStdout = "";
+
+  try {
+    await updateProgress({
+      phase: "BUILDING_INPUT",
+      phaseLabel: "Building input",
+      percent: 1,
+      currentWeek: 0,
+      totalWeeks: null,
+      weekStartDate: null,
+      message:
+        `Preparing solver input for Base Plan v${plan.version}.`,
+    });
+
+    const buildResult = await runCommand(
+      "npx",
+      [
+        "tsx",
+        "scripts/build-solver-input.ts",
+        "--scenario",
+        scenario.id,
+        "--output",
+        inputPath,
+      ],
+    );
+
+    buildStdout = buildResult.stdout;
+
+    await updateProgress({
+      phase: "SOLVING",
+      phaseLabel: "Optimizing",
+      percent: 3,
+      message:
+        "Solver input ready. Starting timetable optimization.",
+    });
+
+    const python = existsSync("solver/.venv/bin/python")
+      ? "solver/.venv/bin/python"
+      : "python3";
+
+    const solverResult = await runCommand(
+      python,
+      [
+        "-m",
+        "solver.src.cli",
+        "--input",
+        inputPath,
+        "--output",
+        outputPath,
+        "--progress",
+      ],
+      {
+        onStdoutLine: async (line) => {
+          const prefix = "YOUTILEYES_PROGRESS ";
+
+          if (!line.startsWith(prefix)) return;
+
+          try {
+            const event = JSON.parse(
+              line.slice(prefix.length),
+            ) as JobProgress;
+
+            await updateProgress(event);
+          } catch (error) {
+            console.warn(
+              `Could not parse solver progress line: ${line}`,
+              error,
+            );
+          }
+        },
+      },
+    );
+
+    solverStdout = solverResult.stdout;
+
+    const output = JSON.parse(
+      await readFile(outputPath, "utf8"),
+    ) as SolverOutput;
+
+    if (output.plan_scenario_id !== scenario.id) {
+      throw new Error(
+        "Solver output belongs to a different PlanScenario.",
+      );
+    }
+
+    if (output.tenant_id !== plan.tenantId) {
+      throw new Error(
+        "Solver output belongs to a different tenant.",
+      );
+    }
+
+    const finalRunStatus = runStatus(output.status);
+
+    if (
+      finalRunStatus !== SolverRunStatus.OPTIMAL &&
+      finalRunStatus !== SolverRunStatus.FEASIBLE
+    ) {
+      throw new Error(
+        `Base Plan solver finished with ${output.status}.`,
+      );
+    }
+
+    await updateProgress({
+      phase: "PERSISTING",
+      phaseLabel: "Saving proposal",
+      percent: 97,
+      message:
+        `Saving ${output.sessions.length} generated sessions.`,
+    });
+
+    const groupIds = [
+      ...new Set(
+        output.sessions.map(
+          (session) => session.teaching_group_id,
+        ),
+      ),
+    ];
+
+    const groups = await prisma.teachingGroup.findMany({
+      where: {
+        tenantId: plan.tenantId,
+        id: {
+          in: groupIds,
+        },
+      },
+      include: {
+        students: {
+          select: {
+            studentId: true,
+          },
+        },
+      },
+    });
+
+    const groupsById = new Map(
+      groups.map((group) => [group.id, group]),
+    );
+
+    const completedAt = new Date();
+
+    await prisma.$transaction(
+      async (tx) => {
+      // A retried job must not duplicate partially persisted scenario sessions.
+      await tx.scenarioSession.deleteMany({
+        where: {
+          tenantId: plan.tenantId,
+          planScenarioId: scenario.id,
+        },
+      });
+
+      for (const item of output.sessions) {
+        const group = groupsById.get(
+          item.teaching_group_id,
+        );
+
+        if (!group) {
+          throw new Error(
+            `Solver returned unknown teaching group ${item.teaching_group_id}.`,
+          );
+        }
+
+        if (!item.date) {
+          throw new Error(
+            "Planning-horizon solver returned a session without a date.",
+          );
+        }
+
+        const assignments =
+          item.staffing_assignments &&
+          item.staffing_assignments.length > 0
+            ? item.staffing_assignments
+            : (
+                item.instructor_ids &&
+                item.instructor_ids.length > 0
+                  ? item.instructor_ids
+                  : [item.instructor_id]
+              ).map((instructorId, index) => ({
+                instructor_id: instructorId,
+                role:
+                  index === 0
+                    ? StaffingRoleType.LEAD
+                    : StaffingRoleType.ASSISTANT,
+              }));
+
+        const uniqueAssignments = [
+          ...new Map(
+            assignments.map((assignment) => [
+              assignment.instructor_id,
+              assignment,
+            ]),
+          ).values(),
+        ];
+
+        await tx.scenarioSession.create({
+          data: {
+            tenantId: plan.tenantId,
+            planScenarioId: scenario.id,
+            teachingGroupId: item.teaching_group_id,
+            roomId: item.room_id,
+            date: dateValue(item.date),
+            startMinute: item.start_minute,
+            endMinute: item.end_minute,
+            origin: "GENERATED",
+            instructors: {
+              create: uniqueAssignments.map(
+                (assignment) => ({
+                  tenantId: plan.tenantId,
+                  instructorId:
+                    assignment.instructor_id,
+                  role: staffingRole(
+                    assignment.role,
+                  ),
+                }),
+              ),
+            },
+            students: {
+              create: group.students.map(
+                (student) => ({
+                  tenantId: plan.tenantId,
+                  studentId: student.studentId,
+                }),
+              ),
+            },
+          },
+        });
+      }
+
+      const afterScenario = await tx.planScenario.update({
+        where: {
+          id: scenario.id,
+        },
+        data: {
+          status: ScenarioStatus.GENERATED,
+          solverScore: output.objective_value,
+          objectiveSummary: {
+            solverStatus: output.status,
+            schemaVersion: output.schema_version,
+            metrics: output.metrics ?? [],
+            diagnostics: JSON.parse(
+              JSON.stringify(output.diagnostics ?? {}),
+            ) as Prisma.InputJsonValue,
+            inputFingerprint,
+          } satisfies Prisma.InputJsonValue,
+          generatedAt: completedAt,
+          failureMessage: null,
+        },
+      });
+
+      await tx.plan.update({
+        where: {
+          id: plan.id,
+        },
+        data: {
+          status: PlanStatus.GENERATED,
+        },
+      });
+
+      await ensureReviewWorkflow(tx, {
+        id: plan.id,
+        tenantId: plan.tenantId,
+        planningScopeId: plan.planningScopeId,
+        version: plan.version,
+      });
+
+      await tx.solverRun.update({
+        where: {
+          id: run.id,
+        },
+        data: {
+          status: finalRunStatus,
+          objectiveValue: output.objective_value,
+          completedAt,
+          wallTimeSeconds:
+            (completedAt.getTime() - startedAt.getTime()) / 1000,
+          diagnostics: {
+            jobType: "BASE_PLAN",
+            planId: plan.id,
+            planVersion: plan.version,
+            scenarioId: scenario.id,
+            sessionCount: output.sessions.length,
+            solverStatus: output.status,
+            buildOutput: tail(buildStdout),
+            solverOutput: tail(solverStdout),
+          },
+        },
+      });
+
+      await writeAuditEvent(tx, {
+        tenantId: plan.tenantId,
+        eventType: "GENERATED",
+        entityType: "PlanScenario",
+        entityId: scenario.id,
+        description:
+          `Base Plan proposal generated for v${plan.version}: ` +
+          `${output.sessions.length} session(s), solver ${output.status}.`,
+        source: "planning.base-plan.worker",
+        correlationId,
+        planId: plan.id,
+        scenarioId: scenario.id,
+        beforeState: {
+          status: ScenarioStatus.GENERATING,
+        },
+        afterState: {
+          status: afterScenario.status,
+          solverStatus: output.status,
+          solverScore: output.objective_value,
+          sessionCount: output.sessions.length,
+          inputFingerprint,
+        },
+      });
+      },
+      {
+        maxWait: 10_000,
+        timeout: 120_000,
+      },
+    );
+
+    await updateProgress({
+      phase: "COMPLETED",
+      phaseLabel: "Completed",
+      percent: 100,
+      message:
+        `Proposal ready with ${output.sessions.length} sessions.`,
+    });
+
+    await prisma.solverJob.update({
+      where: {
+        id: job.id,
+      },
+      data: {
+        status: SolverJobStatus.SUCCEEDED,
+        completedAt,
+        failureMessage: null,
+      },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      await writeAuditEvent(tx, {
+        tenantId: plan.tenantId,
+        eventType: "GENERATED",
+        entityType: "SolverJob",
+        entityId: job.id,
+        description:
+          `Base Plan solver job completed for v${plan.version}.`,
+        source: "planning.base-plan.worker",
+        correlationId,
+        planId: plan.id,
+        scenarioId: scenario.id,
+        beforeState: {
+          status: SolverJobStatus.RUNNING,
+        },
+        afterState: {
+          status: SolverJobStatus.SUCCEEDED,
+          solverStatus: output.status,
+          sessionCount: output.sessions.length,
+        },
+      });
+    });
+
+    console.log(
+      `Base Plan SolverJob ${job.id} completed for scenario ${scenario.id}.`,
+    );
+  } catch (error) {
+    const completedAt = new Date();
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    try {
+      await updateProgress({
+        phase: "FAILED",
+        phaseLabel: "Failed",
+        message: message.slice(0, 1000),
+      });
+    } catch (progressError) {
+      console.error(
+        "Could not persist failure progress.",
+        progressError,
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.solverRun.update({
+        where: {
+          id: run.id,
+        },
+        data: {
+          status: SolverRunStatus.FAILED,
+          completedAt,
+          wallTimeSeconds:
+            (completedAt.getTime() - startedAt.getTime()) / 1000,
+          diagnostics: {
+            jobType: "BASE_PLAN",
+            planId: plan.id,
+            planVersion: plan.version,
+            scenarioId: scenario.id,
+            error: message,
+            buildOutput: tail(buildStdout),
+            solverOutput: tail(solverStdout),
+          },
+        },
+      });
+
+      await tx.planScenario.update({
+        where: {
+          id: scenario.id,
+        },
+        data: {
+          status: ScenarioStatus.FAILED,
+          failureMessage: message.slice(0, 4000),
+          generatedAt: completedAt,
+        },
+      });
+
+      await tx.solverJob.update({
+        where: {
+          id: job.id,
+        },
+        data: {
+          status: SolverJobStatus.FAILED,
+          completedAt,
+          failureMessage: message.slice(0, 4000),
+        },
+      });
+
+      await writeAuditEvent(tx, {
+        tenantId: plan.tenantId,
+        eventType: "OTHER",
+        entityType: "SolverJob",
+        entityId: job.id,
+        description:
+          `Base Plan solver job failed for v${plan.version}: ` +
+          `${message.slice(0, 500)}.`,
+        source: "planning.base-plan.worker",
+        correlationId,
+        planId: plan.id,
+        scenarioId: scenario.id,
+        beforeState: {
+          status: SolverJobStatus.RUNNING,
+        },
+        afterState: {
+          status: SolverJobStatus.FAILED,
+          failureMessage: message,
+        },
+      });
+    });
+
+    throw error;
+  } finally {
+    await Promise.allSettled([
+      rm(inputPath, { force: true }),
+      rm(outputPath, { force: true }),
+    ]);
+  }
 }
 
 async function processJob(jobId: string) {
@@ -164,6 +945,11 @@ async function processJob(jobId: string) {
   }
 
   const config = asConfig(job.config);
+
+  if (config.type === "BASE_PLAN") {
+    await processBasePlanJob(job.id);
+    return;
+  }
 
   if (config.type !== "RESOURCE_RECOVERY") {
     throw new Error(

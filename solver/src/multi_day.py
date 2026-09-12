@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
-from itertools import permutations
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from itertools import combinations, permutations
+from time import perf_counter
 
 from ortools.sat.python import cp_model
 
@@ -55,6 +57,15 @@ class MultiDayScheduleResult:
     status: str
     objective_value: float
     sessions: list[MultiDayScheduledSession]
+    diagnostics: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _ResourceOption:
+    room_id: str
+    instructor_ids: tuple[str, ...]
+    staffing_roles: tuple[str, ...]
+    assignment_penalty: int
 
 
 class MultiDayScheduleError(RuntimeError):
@@ -89,7 +100,9 @@ def _travel_minutes(
     return travel_matrix.get((from_room_id, to_room_id), 0)
 
 
-def _block_map(blocks: list[ResourceBlock]) -> dict[tuple[str, str], list[tuple[int, int]]]:
+def _block_map(
+    blocks: list[ResourceBlock],
+) -> dict[tuple[str, str], list[tuple[int, int]]]:
     result: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
     for block in blocks:
         result[(block.resource_id, block.date)].append(
@@ -103,7 +116,6 @@ def _effective_roles(group: TeachingGroup, room: Room) -> tuple[StaffingRole, ..
     if roles:
         return roles
 
-    # Backward-compatible default: every lesson needs one lead instructor.
     return (StaffingRole(id="default-lead", role="LEAD"),)
 
 
@@ -112,7 +124,6 @@ def _qualified_for_role(
     group: TeachingGroup,
     role: StaffingRole,
 ) -> bool:
-    # Course eligibility remains a hard requirement for every staffing slot.
     if group.course not in instructor.courses:
         return False
 
@@ -127,48 +138,47 @@ def _qualified_for_role(
     return level >= minimum
 
 
-def _staffing_assignments(
+def _staffing_options(
     *,
     group: TeachingGroup,
     room: Room,
     instructors: list[Instructor],
-    date: str,
-    start: int,
-    end: int,
-    instructor_block_map: dict[tuple[str, str], list[tuple[int, int]]],
 ) -> list[tuple[tuple[str, ...], tuple[str, ...], int]]:
-    roles = _effective_roles(group, room)
+    """Return exact staffing choices independent of date/time availability.
 
+    Instructor availability is enforced later through optional intervals and
+    fixed availability blocks. Keeping staffing independent of time avoids
+    multiplying every teacher/room combination by every possible start time.
+    """
+
+    roles = _effective_roles(group, room)
     eligible_by_role: list[list[Instructor]] = []
+
     for role in roles:
         eligible = [
             instructor
             for instructor in instructors
             if _qualified_for_role(instructor, group, role)
-            and not _is_blocked(
-                resource_id=instructor.id,
-                date=date,
-                start=start,
-                end=end,
-                block_map=instructor_block_map,
-            )
         ]
         if not eligible:
             return []
         eligible_by_role.append(eligible)
 
-    # Role counts are materialised into repeated role slots by the TypeScript
-    # input builder. We need distinct people across those slots.
-    unique_instructors = {item.id: item for items in eligible_by_role for item in items}
+    unique_instructors = {
+        item.id: item
+        for items in eligible_by_role
+        for item in items
+    }
     if len(unique_instructors) < len(roles):
         return []
 
     results: list[tuple[tuple[str, ...], tuple[str, ...], int]] = []
     seen: set[tuple[str, ...]] = set()
 
-    # The demo and intended operational rules normally use small staffing counts.
-    # permutations keeps the implementation exact and transparent.
-    for instructor_order in permutations(unique_instructors.values(), len(roles)):
+    for instructor_order in permutations(
+        unique_instructors.values(),
+        len(roles),
+    ):
         if any(
             instructor not in eligible_by_role[index]
             for index, instructor in enumerate(instructor_order)
@@ -197,6 +207,72 @@ def _staffing_assignments(
     return results
 
 
+def _resource_options(
+    *,
+    group: TeachingGroup,
+    instructors: list[Instructor],
+    rooms: list[Room],
+) -> list[_ResourceOption]:
+    result: list[_ResourceOption] = []
+
+    for room in rooms:
+        if room.id not in group.allowed_rooms:
+            continue
+        if len(group.students) > room.capacity:
+            continue
+
+        for instructor_ids, staffing_roles, staffing_penalty in _staffing_options(
+            group=group,
+            room=room,
+            instructors=instructors,
+        ):
+            result.append(
+                _ResourceOption(
+                    room_id=room.id,
+                    instructor_ids=instructor_ids,
+                    staffing_roles=staffing_roles,
+                    assignment_penalty=(
+                        staffing_penalty
+                        + group.room_penalties.get(room.id, 0)
+                    ),
+                )
+            )
+
+    return result
+
+
+def _staffing_assignments(
+    *,
+    group: TeachingGroup,
+    room: Room,
+    instructors: list[Instructor],
+    date: str,
+    start: int,
+    end: int,
+    instructor_block_map: dict[tuple[str, str], list[tuple[int, int]]],
+) -> list[tuple[tuple[str, ...], tuple[str, ...], int]]:
+    """Backward-compatible candidate helper used by diagnostics/tests."""
+
+    return [
+        option
+        for option in _staffing_options(
+            group=group,
+            room=room,
+            instructors=instructors,
+        )
+        if all(
+            not _is_blocked(
+                resource_id=instructor_id,
+                date=date,
+                start=start,
+                end=end,
+                block_map=instructor_block_map,
+            )
+            for instructor_id in option[0]
+        )
+    ]
+
+
 def build_multi_day_candidates(
     *,
     occurrences: list[MultiDayOccurrence],
@@ -208,6 +284,11 @@ def build_multi_day_candidates(
     student_blocks: list[ResourceBlock],
     room_blocks: list[ResourceBlock],
 ) -> list[MultiDayCandidate]:
+    """Materialise legacy full candidates for diagnostics only.
+
+    solve_multi_day_week no longer uses this Cartesian representation.
+    """
+
     group_by_id = {group.id: group for group in groups}
     instructor_block_map = _block_map(instructor_blocks)
     student_block_map = _block_map(student_blocks)
@@ -253,7 +334,11 @@ def build_multi_day_candidates(
                     ):
                         continue
 
-                    for instructor_ids, staffing_roles, staffing_penalty in _staffing_assignments(
+                    for (
+                        instructor_ids,
+                        staffing_roles,
+                        staffing_penalty,
+                    ) in _staffing_assignments(
                         group=group,
                         room=room,
                         instructors=instructors,
@@ -294,512 +379,803 @@ def solve_multi_day_week(
     instructor_blocks: list[ResourceBlock] | None = None,
     student_blocks: list[ResourceBlock] | None = None,
     room_blocks: list[ResourceBlock] | None = None,
-    max_time_seconds: float = 10,
+    max_time_seconds: float = 30,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> MultiDayScheduleResult:
+    """Solve one week with decoupled placement and resource assignment.
+
+    A lesson's date/start decision is represented once. Room/staffing choices
+    are selected separately and linked to optional resource intervals. This
+    preserves the full room/teacher solution space while avoiding the previous
+    date x start x room x staffing Cartesian Boolean candidate model.
+    """
+
+    started = perf_counter()
     instructor_blocks = instructor_blocks or []
     student_blocks = student_blocks or []
     room_blocks = room_blocks or []
 
+    if not start_times:
+        raise MultiDayScheduleError("At least one start time is required.")
+
+    unique_start_times = sorted(set(start_times))
     group_by_id = {group.id: group for group in groups}
     instructor_by_id = {item.id: item for item in instructors}
     room_by_id = {item.id: item for item in rooms}
-
-    candidates = build_multi_day_candidates(
-        occurrences=occurrences,
-        groups=groups,
-        instructors=instructors,
-        rooms=rooms,
-        start_times=start_times,
-        instructor_blocks=instructor_blocks,
-        student_blocks=student_blocks,
-        room_blocks=room_blocks,
-    )
-
-    model = cp_model.CpModel()
-    variables = [
-        model.new_bool_var(
-            f"occ_{candidate.occurrence_id}_{candidate.date}_{candidate.start}_"
-            f"{'_'.join(candidate.instructor_ids)}_{candidate.room_id}"
-        )
-        for candidate in candidates
-    ]
-
-    candidates_by_occurrence: dict[str, list[int]] = defaultdict(list)
-    candidates_by_occurrence_date: dict[tuple[str, str], list[int]] = defaultdict(list)
-    candidates_by_room_date: dict[tuple[str, str], list[int]] = defaultdict(list)
-    candidates_by_instructor_date: dict[tuple[str, str], list[int]] = defaultdict(list)
-
     occurrence_by_id = {item.id: item for item in occurrences}
-    occurrence_ids_by_group: dict[str, list[str]] = defaultdict(list)
+    student_block_map = _block_map(student_blocks)
+
+    def emit(**event: object) -> None:
+        if progress_callback is not None:
+            progress_callback(dict(event))
+
+    emit(
+        phase="BUILDING_MODEL",
+        phaseLabel="Preparing decision space",
+        message=(
+            f"Preparing placement and resource choices for "
+            f"{len(occurrences)} teaching occurrences."
+        ),
+    )
+
+    preparation_started = perf_counter()
+
+    resource_options_by_occurrence: dict[str, list[_ResourceOption]] = {}
+    valid_starts_by_occurrence_date: dict[tuple[str, str], tuple[int, ...]] = {}
+    legacy_candidate_equivalent = 0
+    placement_domain_size = 0
 
     for occurrence in occurrences:
-        occurrence_ids_by_group[occurrence.teaching_group_id].append(
-            occurrence.id
-        )
-
-    for index, candidate in enumerate(candidates):
-        candidates_by_occurrence[candidate.occurrence_id].append(index)
-        candidates_by_occurrence_date[
-            (candidate.occurrence_id, candidate.date)
-        ].append(index)
-        candidates_by_room_date[
-            (candidate.room_id, candidate.date)
-        ].append(index)
-
-        for instructor_id in candidate.instructor_ids:
-            candidates_by_instructor_date[
-                (instructor_id, candidate.date)
-            ].append(index)
-
-    for occurrence in occurrences:
-        indices = candidates_by_occurrence.get(occurrence.id, [])
-        if not indices:
+        group = group_by_id.get(occurrence.teaching_group_id)
+        if group is None:
             raise MultiDayScheduleError(
-                f"No valid candidates for occurrence {occurrence.id} "
-                f"(teaching group {occurrence.teaching_group_id})"
-            )
-        model.add(sum(variables[index] for index in indices) == 1)
-
-    # Keep a single copy of every incompatibility constraint. A pair can be
-    # incompatible for several reasons (room, instructor and/or students).
-    incompatible_pairs: set[tuple[int, int]] = set()
-
-    def add_incompatible(left_index: int, right_index: int) -> None:
-        if left_index == right_index:
-            return
-
-        left = candidates[left_index]
-        right = candidates[right_index]
-
-        # Alternatives for the same occurrence are already mutually exclusive
-        # through the exactly-one occurrence constraint.
-        if left.occurrence_id == right.occurrence_id:
-            return
-
-        pair = (
-            (left_index, right_index)
-            if left_index < right_index
-            else (right_index, left_index)
-        )
-
-        if pair in incompatible_pairs:
-            return
-
-        incompatible_pairs.add(pair)
-        model.add(
-            variables[pair[0]] + variables[pair[1]] <= 1
-        )
-
-    # ------------------------------------------------------------------
-    # Room conflicts
-    # ------------------------------------------------------------------
-    # Compare only candidates that use the same room on the same date.
-    # Candidates are ordered by start time, so once the next candidate starts
-    # after the current one ends there can be no further overlap.
-    for indices in candidates_by_room_date.values():
-        ordered = sorted(
-            indices,
-            key=lambda index: (
-                candidates[index].start,
-                candidates[index].end,
-            ),
-        )
-
-        for left_position, left_index in enumerate(ordered):
-            left = candidates[left_index]
-
-            for right_index in ordered[left_position + 1 :]:
-                right = candidates[right_index]
-
-                if right.start >= left.end:
-                    break
-
-                if _overlaps(
-                    left.start,
-                    left.end,
-                    right.start,
-                    right.end,
-                ):
-                    add_incompatible(left_index, right_index)
-
-    # ------------------------------------------------------------------
-    # Instructor conflicts and travel
-    # ------------------------------------------------------------------
-    max_travel_minutes = max(
-        travel_matrix.values(),
-        default=0,
-    )
-
-    for indices in candidates_by_instructor_date.values():
-        ordered = sorted(
-            indices,
-            key=lambda index: (
-                candidates[index].start,
-                candidates[index].end,
-            ),
-        )
-
-        for left_position, left_index in enumerate(ordered):
-            left = candidates[left_index]
-
-            for right_index in ordered[left_position + 1 :]:
-                right = candidates[right_index]
-
-                # Sorted by start time. Beyond the largest possible travel
-                # requirement this candidate and all following candidates are
-                # guaranteed compatible for this instructor.
-                if (
-                    right.start >= left.end
-                    and right.start - left.end >= max_travel_minutes
-                ):
-                    break
-
-                if _overlaps(
-                    left.start,
-                    left.end,
-                    right.start,
-                    right.end,
-                ):
-                    add_incompatible(left_index, right_index)
-                    continue
-
-                if left.end <= right.start:
-                    if right.start - left.end < _travel_minutes(
-                        left.room_id,
-                        right.room_id,
-                        travel_matrix,
-                    ):
-                        add_incompatible(left_index, right_index)
-
-    # ------------------------------------------------------------------
-    # Student conflicts, break and travel
-    # ------------------------------------------------------------------
-    # Student membership is constant for a teaching group, so determine which
-    # group combinations actually share students once instead of checking
-    # student sets for every candidate pair.
-    student_sets = {
-        group.id: frozenset(group.students)
-        for group in groups
-    }
-
-    relevant_group_pairs: list[tuple[str, str]] = []
-
-    group_ids = [
-        group.id
-        for group in groups
-        if occurrence_ids_by_group.get(group.id)
-    ]
-
-    for left_position, left_group_id in enumerate(group_ids):
-        left_students = student_sets[left_group_id]
-
-        # Same teaching group: separate occurrences contain the same students.
-        relevant_group_pairs.append(
-            (left_group_id, left_group_id)
-        )
-
-        for right_group_id in group_ids[left_position + 1 :]:
-            if left_students & student_sets[right_group_id]:
-                relevant_group_pairs.append(
-                    (left_group_id, right_group_id)
-                )
-
-    max_student_break = max(
-        student_profile.min_break_minutes,
-        student_profile.min_break_after_double_minutes,
-    )
-
-    max_student_travel = (
-        max_travel_minutes
-        if student_profile.travel_consumes_break_time
-        else 0
-    )
-
-    student_relevance_window = (
-        max_student_break + max_student_travel
-    )
-
-    def add_student_pair_constraints(
-        left_indices: list[int],
-        right_indices: list[int],
-        *,
-        same_occurrence_set: bool,
-    ) -> None:
-        left_ordered = sorted(
-            left_indices,
-            key=lambda index: (
-                candidates[index].start,
-                candidates[index].end,
-            ),
-        )
-        right_ordered = (
-            left_ordered
-            if same_occurrence_set
-            else sorted(
-                right_indices,
-                key=lambda index: (
-                    candidates[index].start,
-                    candidates[index].end,
-                ),
-            )
-        )
-
-        if same_occurrence_set:
-            pair_source = (
-                (left_index, right_index)
-                for position, left_index in enumerate(left_ordered)
-                for right_index in left_ordered[position + 1 :]
-            )
-        else:
-            pair_source = (
-                (left_index, right_index)
-                for left_index in left_ordered
-                for right_index in right_ordered
+                f"Occurrence {occurrence.id} references unknown teaching group "
+                f"{occurrence.teaching_group_id}"
             )
 
-        for left_index, right_index in pair_source:
-            left = candidates[left_index]
-            right = candidates[right_index]
-
-            if left.occurrence_id == right.occurrence_id:
-                continue
-
-            if _overlaps(
-                left.start,
-                left.end,
-                right.start,
-                right.end,
-            ):
-                add_incompatible(left_index, right_index)
-                continue
-
-            if left.end <= right.start:
-                first = left
-                second = right
-            elif right.end <= left.start:
-                first = right
-                second = left
-            else:
-                continue
-
-            # Pairs further apart than every possible break + travel
-            # requirement are always compatible.
-            if (
-                second.start - first.end
-                >= student_relevance_window
-            ):
-                continue
-
-            travel = (
-                _travel_minutes(
-                    first.room_id,
-                    second.room_id,
-                    travel_matrix,
-                )
-                if student_profile.travel_consumes_break_time
-                else 0
+        options = _resource_options(
+            group=group,
+            instructors=instructors,
+            rooms=rooms,
+        )
+        if not options:
+            raise MultiDayScheduleError(
+                f"No valid room/staffing options for occurrence {occurrence.id} "
+                f"(teaching group {group.id})."
             )
+        resource_options_by_occurrence[occurrence.id] = options
 
-            real_break = (
-                second.start
-                - first.end
-                - travel
-            )
-
-            required_break = student_profile.min_break_minutes
-
-            if first.end - first.start > 45:
-                required_break = max(
-                    required_break,
-                    student_profile.min_break_after_double_minutes,
-                )
-
-            if real_break < required_break:
-                add_incompatible(left_index, right_index)
-
-    all_dates = sorted(
-        {
-            candidate.date
-            for candidate in candidates
-        }
-    )
-
-    for left_group_id, right_group_id in relevant_group_pairs:
-        left_occurrences = occurrence_ids_by_group[left_group_id]
-        right_occurrences = occurrence_ids_by_group[right_group_id]
-
-        for date in all_dates:
-            if left_group_id == right_group_id:
-                for left_position, left_occurrence_id in enumerate(
-                    left_occurrences
-                ):
-                    left_indices = candidates_by_occurrence_date.get(
-                        (left_occurrence_id, date),
-                        [],
+        valid_date_count = 0
+        for date in occurrence.allowed_dates:
+            valid_starts = tuple(
+                start
+                for start in unique_start_times
+                if not any(
+                    _is_blocked(
+                        resource_id=student_id,
+                        date=date,
+                        start=start,
+                        end=start + occurrence.duration_minutes,
+                        block_map=student_block_map,
                     )
+                    for student_id in group.students
+                )
+            )
+            if not valid_starts:
+                continue
 
-                    if not left_indices:
-                        continue
+            valid_starts_by_occurrence_date[(occurrence.id, date)] = valid_starts
+            placement_domain_size += len(valid_starts)
+            legacy_candidate_equivalent += len(valid_starts) * len(options)
+            valid_date_count += 1
 
-                    for right_occurrence_id in left_occurrences[
-                        left_position + 1 :
-                    ]:
-                        right_indices = candidates_by_occurrence_date.get(
-                            (right_occurrence_id, date),
-                            [],
-                        )
+        if valid_date_count == 0:
+            raise MultiDayScheduleError(
+                f"No valid date/start placements for occurrence {occurrence.id}."
+            )
 
-                        if not right_indices:
-                            continue
+    preparation_seconds = perf_counter() - preparation_started
 
-                        add_student_pair_constraints(
-                            left_indices,
-                            right_indices,
-                            same_occurrence_set=False,
-                        )
-            else:
-                for left_occurrence_id in left_occurrences:
-                    left_indices = candidates_by_occurrence_date.get(
-                        (left_occurrence_id, date),
-                        [],
-                    )
+    emit(
+        phase="BUILDING_MODEL",
+        phaseLabel="Building compact model",
+        candidateCount=legacy_candidate_equivalent,
+        placementCount=placement_domain_size,
+        resourceOptionCount=sum(
+            len(options)
+            for options in resource_options_by_occurrence.values()
+        ),
+        candidateSeconds=round(preparation_seconds, 3),
+        message=(
+            f"Compact decision space prepared in {preparation_seconds:.1f}s: "
+            f"{placement_domain_size:,} placement values instead of "
+            f"{legacy_candidate_equivalent:,} full Cartesian candidates."
+        ),
+    )
 
-                    if not left_indices:
-                        continue
+    model_started = perf_counter()
+    model = cp_model.CpModel()
 
-                    for right_occurrence_id in right_occurrences:
-                        right_indices = candidates_by_occurrence_date.get(
-                            (right_occurrence_id, date),
-                            [],
-                        )
+    date_vars: dict[tuple[str, str], cp_model.IntVar] = {}
+    start_vars: dict[tuple[str, str], cp_model.IntVar] = {}
+    chosen_start_vars: dict[str, cp_model.IntVar] = {}
+    time_penalty_vars: dict[str, cp_model.IntVar] = {}
 
-                        if not right_indices:
-                            continue
+    option_vars: dict[tuple[str, int], cp_model.IntVar] = {}
+    room_vars: dict[tuple[str, str], cp_model.IntVar] = {}
+    instructor_vars: dict[tuple[str, str], cp_model.IntVar] = {}
 
-                        add_student_pair_constraints(
-                            left_indices,
-                            right_indices,
-                            same_occurrence_set=False,
-                        )
+    room_ids_by_occurrence: dict[str, tuple[str, ...]] = {}
+    instructor_ids_by_occurrence: dict[str, tuple[str, ...]] = {}
 
-    # ------------------------------------------------------------------
-    # Student daily load
-    # ------------------------------------------------------------------
-    # Build student -> occurrence membership once. This avoids scanning every
-    # candidate on a date once for every student.
+    # Placement variables: one date per occurrence, one start variable for each
+    # feasible date. A global chosen start is linked to whichever date is active.
+    for occurrence in occurrences:
+        date_choices: list[cp_model.IntVar] = []
+        valid_date_keys: list[tuple[str, str]] = []
+
+        for date in occurrence.allowed_dates:
+            key = (occurrence.id, date)
+            valid_starts = valid_starts_by_occurrence_date.get(key)
+            if not valid_starts:
+                continue
+
+            date_var = model.new_bool_var(f"date_{occurrence.id}_{date}")
+            start_var = model.new_int_var_from_domain(
+                cp_model.Domain.from_values(list(valid_starts)),
+                f"start_{occurrence.id}_{date}",
+            )
+            date_vars[key] = date_var
+            start_vars[key] = start_var
+            date_choices.append(date_var)
+            valid_date_keys.append(key)
+
+        model.add_exactly_one(date_choices)
+
+        global_start = model.new_int_var(
+            min(unique_start_times),
+            max(unique_start_times),
+            f"chosen_start_{occurrence.id}",
+        )
+        chosen_start_vars[occurrence.id] = global_start
+
+        for key in valid_date_keys:
+            model.add(global_start == start_vars[key]).only_enforce_if(
+                date_vars[key]
+            )
+
+        penalty_values = [
+            max(0, start - 8 * 60) // 15
+            for start in unique_start_times
+        ]
+        time_penalty = model.new_int_var(
+            min(penalty_values),
+            max(penalty_values),
+            f"time_penalty_{occurrence.id}",
+        )
+        time_penalty_vars[occurrence.id] = time_penalty
+        model.add_allowed_assignments(
+            [global_start, time_penalty],
+            [
+                [start, max(0, start - 8 * 60) // 15]
+                for start in unique_start_times
+            ],
+        )
+
+    # Resource options: each occurrence chooses one exact room + staffing
+    # combination. Room/instructor selector variables are derived from this
+    # choice and reused throughout availability, overlap and travel constraints.
+    for occurrence in occurrences:
+        options = resource_options_by_occurrence[occurrence.id]
+        occurrence_option_vars: list[cp_model.IntVar] = []
+
+        room_to_options: dict[str, list[cp_model.IntVar]] = defaultdict(list)
+        instructor_to_options: dict[str, list[cp_model.IntVar]] = defaultdict(list)
+
+        for option_index, option in enumerate(options):
+            option_var = model.new_bool_var(
+                f"resource_{occurrence.id}_{option_index}"
+            )
+            option_vars[(occurrence.id, option_index)] = option_var
+            occurrence_option_vars.append(option_var)
+            room_to_options[option.room_id].append(option_var)
+            for instructor_id in option.instructor_ids:
+                instructor_to_options[instructor_id].append(option_var)
+
+        model.add_exactly_one(occurrence_option_vars)
+
+        room_ids = tuple(sorted(room_to_options))
+        instructor_ids = tuple(sorted(instructor_to_options))
+        room_ids_by_occurrence[occurrence.id] = room_ids
+        instructor_ids_by_occurrence[occurrence.id] = instructor_ids
+
+        for room_id, source_vars in room_to_options.items():
+            room_var = model.new_bool_var(
+                f"room_{occurrence.id}_{room_id}"
+            )
+            model.add(sum(source_vars) == room_var)
+            room_vars[(occurrence.id, room_id)] = room_var
+
+        for instructor_id, source_vars in instructor_to_options.items():
+            instructor_var = model.new_bool_var(
+                f"instructor_{occurrence.id}_{instructor_id}"
+            )
+            model.add(sum(source_vars) == instructor_var)
+            instructor_vars[(occurrence.id, instructor_id)] = instructor_var
+
+    # Room and instructor overlap/availability use optional fixed-size intervals.
+    # Presence is the conjunction of selected date and selected resource.
+    room_intervals: dict[tuple[str, str], list[cp_model.IntervalVar]] = defaultdict(list)
+    instructor_intervals: dict[tuple[str, str], list[cp_model.IntervalVar]] = defaultdict(list)
+    resource_presence_count = 0
+
+    def conjunction(
+        left: cp_model.IntVar,
+        right: cp_model.IntVar,
+        name: str,
+    ) -> cp_model.IntVar:
+        nonlocal resource_presence_count
+        result = model.new_bool_var(name)
+        model.add(result <= left)
+        model.add(result <= right)
+        model.add(result >= left + right - 1)
+        resource_presence_count += 1
+        return result
+
+    for occurrence in occurrences:
+        for date in occurrence.allowed_dates:
+            date_key = (occurrence.id, date)
+            date_var = date_vars.get(date_key)
+            start_var = start_vars.get(date_key)
+            if date_var is None or start_var is None:
+                continue
+
+            for room_id in room_ids_by_occurrence[occurrence.id]:
+                presence = conjunction(
+                    date_var,
+                    room_vars[(occurrence.id, room_id)],
+                    f"room_presence_{occurrence.id}_{date}_{room_id}",
+                )
+                interval = model.new_optional_fixed_size_interval_var(
+                    start_var,
+                    occurrence.duration_minutes,
+                    presence,
+                    f"room_interval_{occurrence.id}_{date}_{room_id}",
+                )
+                room_intervals[(room_id, date)].append(interval)
+
+            for instructor_id in instructor_ids_by_occurrence[occurrence.id]:
+                presence = conjunction(
+                    date_var,
+                    instructor_vars[(occurrence.id, instructor_id)],
+                    f"instructor_presence_{occurrence.id}_{date}_{instructor_id}",
+                )
+                interval = model.new_optional_fixed_size_interval_var(
+                    start_var,
+                    occurrence.duration_minutes,
+                    presence,
+                    f"instructor_interval_{occurrence.id}_{date}_{instructor_id}",
+                )
+                instructor_intervals[(instructor_id, date)].append(interval)
+
+    for block_index, block in enumerate(room_blocks):
+        duration = block.end_minute - block.start_minute
+        if duration <= 0:
+            continue
+        room_intervals[(block.resource_id, block.date)].append(
+            model.new_fixed_size_interval_var(
+                block.start_minute,
+                duration,
+                f"room_block_{block_index}",
+            )
+        )
+
+    for block_index, block in enumerate(instructor_blocks):
+        duration = block.end_minute - block.start_minute
+        if duration <= 0:
+            continue
+        instructor_intervals[(block.resource_id, block.date)].append(
+            model.new_fixed_size_interval_var(
+                block.start_minute,
+                duration,
+                f"instructor_block_{block_index}",
+            )
+        )
+
+    for intervals in room_intervals.values():
+        if len(intervals) > 1:
+            model.add_no_overlap(intervals)
+
+    for intervals in instructor_intervals.values():
+        if len(intervals) > 1:
+            model.add_no_overlap(intervals)
+
+    # Student bundles keep daily-load constraints compact. Students with the
+    # exact same occurrence set have identical timetable/load constraints.
     occurrence_ids_by_student: dict[str, set[str]] = defaultdict(set)
-
     for occurrence in occurrences:
         group = group_by_id[occurrence.teaching_group_id]
         for student_id in group.students:
-            occurrence_ids_by_student[student_id].add(
-                occurrence.id
-            )
+            occurrence_ids_by_student[student_id].add(occurrence.id)
 
-    dates_by_occurrence: dict[str, set[str]] = defaultdict(set)
-    for occurrence_id, date in candidates_by_occurrence_date:
-        dates_by_occurrence[occurrence_id].add(date)
+    student_bundles: dict[frozenset[str], list[str]] = defaultdict(list)
+    for student_id, occurrence_ids in occurrence_ids_by_student.items():
+        student_bundles[frozenset(occurrence_ids)].append(student_id)
 
-    for student_id, student_occurrence_ids in occurrence_ids_by_student.items():
-        relevant_dates = {
-            date
-            for occurrence_id in student_occurrence_ids
-            for date in dates_by_occurrence.get(
-                occurrence_id,
-                set(),
-            )
-        }
+    student_pairs: set[tuple[str, str]] = set()
+    for occurrence_ids in student_bundles:
+        for left_id, right_id in combinations(sorted(occurrence_ids), 2):
+            student_pairs.add((left_id, right_id))
 
-        for date in relevant_dates:
-            date_indices = [
-                index
-                for occurrence_id in student_occurrence_ids
-                for index in candidates_by_occurrence_date.get(
-                    (occurrence_id, date),
-                    [],
-                )
+    all_dates = sorted({date for _, date in date_vars})
+    for occurrence_ids in student_bundles:
+        for date in all_dates:
+            date_terms = [
+                date_vars[(occurrence_id, date)]
+                for occurrence_id in occurrence_ids
+                if (occurrence_id, date) in date_vars
             ]
-
-            if not date_indices:
+            if not date_terms:
                 continue
 
             if student_profile.max_sessions_per_day is not None:
                 model.add(
-                    sum(
-                        variables[index]
-                        for index in date_indices
-                    )
+                    sum(date_terms)
                     <= student_profile.max_sessions_per_day
                 )
 
-            if (
-                student_profile.max_teaching_minutes_per_day
-                is not None
-            ):
+            if student_profile.max_teaching_minutes_per_day is not None:
+                minute_terms = [
+                    occurrence_by_id[occurrence_id].duration_minutes
+                    * date_vars[(occurrence_id, date)]
+                    for occurrence_id in occurrence_ids
+                    if (occurrence_id, date) in date_vars
+                ]
                 model.add(
-                    sum(
-                        (
-                            candidates[index].end
-                            - candidates[index].start
-                        )
-                        * variables[index]
-                        for index in date_indices
-                    )
+                    sum(minute_terms)
                     <= student_profile.max_teaching_minutes_per_day
                 )
 
-    objective_terms = []
-    for index, candidate in enumerate(candidates):
-        time_penalty = max(0, candidate.start - 8 * 60) // 15
-        objective_terms.append(
-            (candidate.assignment_penalty + time_penalty) * variables[index]
+    # One chronological ordering literal per occurrence-pair/date is shared by
+    # student and instructor travel constraints. If both lessons land on that
+    # date, the literal determines which lesson is first.
+    order_vars: dict[tuple[str, str, str], cp_model.IntVar] = {}
+
+    def order_var(left_id: str, right_id: str, date: str) -> cp_model.IntVar:
+        key = (left_id, right_id, date)
+        existing = order_vars.get(key)
+        if existing is not None:
+            return existing
+        created = model.new_bool_var(
+            f"order_{left_id}_{right_id}_{date}"
+        )
+        order_vars[key] = created
+        return created
+
+    student_break_constraints = 0
+    student_travel_constraints = 0
+
+    for left_id, right_id in sorted(student_pairs):
+        left = occurrence_by_id[left_id]
+        right = occurrence_by_id[right_id]
+        common_dates = sorted(
+            set(left.allowed_dates) & set(right.allowed_dates)
         )
 
-    model.minimize(sum(objective_terms))
+        left_break = student_profile.min_break_minutes
+        if left.duration_minutes > 45:
+            left_break = max(
+                left_break,
+                student_profile.min_break_after_double_minutes,
+            )
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = max_time_seconds
-    status_code = solver.solve(model)
-    status = solver.status_name(status_code)
+        right_break = student_profile.min_break_minutes
+        if right.duration_minutes > 45:
+            right_break = max(
+                right_break,
+                student_profile.min_break_after_double_minutes,
+            )
 
-    if status not in {"OPTIMAL", "FEASIBLE"}:
-        return MultiDayScheduleResult(
-            status=status,
-            objective_value=0.0,
-            sessions=[],
+        for date in common_dates:
+            left_date = date_vars.get((left_id, date))
+            right_date = date_vars.get((right_id, date))
+            left_start = start_vars.get((left_id, date))
+            right_start = start_vars.get((right_id, date))
+            if (
+                left_date is None
+                or right_date is None
+                or left_start is None
+                or right_start is None
+            ):
+                continue
+
+            order = order_var(left_id, right_id, date)
+
+            model.add(
+                left_start + left.duration_minutes + left_break
+                <= right_start
+            ).only_enforce_if([left_date, right_date, order])
+            model.add(
+                right_start + right.duration_minutes + right_break
+                <= left_start
+            ).only_enforce_if([left_date, right_date, order.Not()])
+            student_break_constraints += 2
+
+            if not student_profile.travel_consumes_break_time:
+                continue
+
+            for left_room in room_ids_by_occurrence[left_id]:
+                left_room_var = room_vars[(left_id, left_room)]
+                for right_room in room_ids_by_occurrence[right_id]:
+                    travel_lr = _travel_minutes(
+                        left_room,
+                        right_room,
+                        travel_matrix,
+                    )
+                    travel_rl = _travel_minutes(
+                        right_room,
+                        left_room,
+                        travel_matrix,
+                    )
+                    if travel_lr <= 0 and travel_rl <= 0:
+                        continue
+
+                    right_room_var = room_vars[(right_id, right_room)]
+
+                    if travel_lr > 0:
+                        model.add(
+                            left_start
+                            + left.duration_minutes
+                            + left_break
+                            + travel_lr
+                            <= right_start
+                        ).only_enforce_if(
+                            [
+                                left_date,
+                                right_date,
+                                left_room_var,
+                                right_room_var,
+                                order,
+                            ]
+                        )
+                        student_travel_constraints += 1
+
+                    if travel_rl > 0:
+                        model.add(
+                            right_start
+                            + right.duration_minutes
+                            + right_break
+                            + travel_rl
+                            <= left_start
+                        ).only_enforce_if(
+                            [
+                                left_date,
+                                right_date,
+                                left_room_var,
+                                right_room_var,
+                                order.Not(),
+                            ]
+                        )
+                        student_travel_constraints += 1
+
+    # Instructor overlap is already covered by AddNoOverlap. The constraints
+    # below add only room-to-room travel time when the same instructor is chosen
+    # for both occurrences.
+    instructor_travel_constraints = 0
+    occurrence_ids = [occurrence.id for occurrence in occurrences]
+
+    for left_id, right_id in combinations(occurrence_ids, 2):
+        common_instructors = sorted(
+            set(instructor_ids_by_occurrence[left_id])
+            & set(instructor_ids_by_occurrence[right_id])
         )
-
-    scheduled: list[MultiDayScheduledSession] = []
-    for index, candidate in enumerate(candidates):
-        if not solver.boolean_value(variables[index]):
+        if not common_instructors:
             continue
 
-        assigned = tuple(
-            instructor_by_id[instructor_id]
-            for instructor_id in candidate.instructor_ids
+        left = occurrence_by_id[left_id]
+        right = occurrence_by_id[right_id]
+        common_dates = sorted(
+            set(left.allowed_dates) & set(right.allowed_dates)
         )
-        staffing_assignments = tuple(
-            (role, instructor)
-            for role, instructor in zip(candidate.staffing_roles, assigned)
+        if not common_dates:
+            continue
+
+        for date in common_dates:
+            left_date = date_vars.get((left_id, date))
+            right_date = date_vars.get((right_id, date))
+            left_start = start_vars.get((left_id, date))
+            right_start = start_vars.get((right_id, date))
+            if (
+                left_date is None
+                or right_date is None
+                or left_start is None
+                or right_start is None
+            ):
+                continue
+
+            order = order_var(left_id, right_id, date)
+
+            for instructor_id in common_instructors:
+                left_instructor = instructor_vars[(left_id, instructor_id)]
+                right_instructor = instructor_vars[(right_id, instructor_id)]
+
+                for left_room in room_ids_by_occurrence[left_id]:
+                    left_room_var = room_vars[(left_id, left_room)]
+                    for right_room in room_ids_by_occurrence[right_id]:
+                        travel_lr = _travel_minutes(
+                            left_room,
+                            right_room,
+                            travel_matrix,
+                        )
+                        travel_rl = _travel_minutes(
+                            right_room,
+                            left_room,
+                            travel_matrix,
+                        )
+                        if travel_lr <= 0 and travel_rl <= 0:
+                            continue
+
+                        right_room_var = room_vars[(right_id, right_room)]
+                        base_literals = [
+                            left_date,
+                            right_date,
+                            left_instructor,
+                            right_instructor,
+                            left_room_var,
+                            right_room_var,
+                        ]
+
+                        if travel_lr > 0:
+                            model.add(
+                                left_start
+                                + left.duration_minutes
+                                + travel_lr
+                                <= right_start
+                            ).only_enforce_if(base_literals + [order])
+                            instructor_travel_constraints += 1
+
+                        if travel_rl > 0:
+                            model.add(
+                                right_start
+                                + right.duration_minutes
+                                + travel_rl
+                                <= left_start
+                            ).only_enforce_if(base_literals + [order.Not()])
+                            instructor_travel_constraints += 1
+
+    model_seconds = perf_counter() - model_started
+    selector_count = (
+        len(date_vars)
+        + len(option_vars)
+        + len(room_vars)
+        + len(instructor_vars)
+        + resource_presence_count
+        + len(order_vars)
+    )
+
+    emit(
+        phase="SOLVING",
+        phaseLabel="Finding feasible timetable",
+        candidateCount=legacy_candidate_equivalent,
+        placementCount=placement_domain_size,
+        resourceOptionCount=len(option_vars),
+        selectorCount=selector_count,
+        candidateSeconds=round(preparation_seconds, 3),
+        modelSeconds=round(model_seconds, 3),
+        instructorTravelConstraints=instructor_travel_constraints,
+        studentBreakConstraints=(
+            student_break_constraints + student_travel_constraints
+        ),
+        message=(
+            f"Compact model built in {model_seconds:.1f}s. "
+            f"Finding the first feasible timetable."
+        ),
+    )
+
+    # Phase 1: find any feasible timetable. This is intentionally objective-free
+    # and stops at the first solution so users get a usable plan quickly.
+    feasibility_solver = cp_model.CpSolver()
+    feasibility_solver.parameters.max_time_in_seconds = max_time_seconds
+    feasibility_solver.parameters.num_workers = 8
+    feasibility_solver.parameters.stop_after_first_solution = True
+
+    feasibility_started = perf_counter()
+    feasibility_status_code = feasibility_solver.solve(model)
+    feasibility_seconds = perf_counter() - feasibility_started
+    feasibility_status = feasibility_solver.status_name(
+        feasibility_status_code
+    )
+
+    diagnostics: dict[str, object] = {
+        "legacyCandidateEquivalent": legacy_candidate_equivalent,
+        "placementDomainSize": placement_domain_size,
+        "resourceOptionCount": len(option_vars),
+        "dateChoiceCount": len(date_vars),
+        "roomChoiceCount": len(room_vars),
+        "instructorChoiceCount": len(instructor_vars),
+        "resourcePresenceCount": resource_presence_count,
+        "orderingVariableCount": len(order_vars),
+        "studentBundleCount": len(student_bundles),
+        "studentBreakConstraintCount": student_break_constraints,
+        "studentTravelConstraintCount": student_travel_constraints,
+        "instructorTravelConstraintCount": instructor_travel_constraints,
+        "candidateSeconds": round(preparation_seconds, 6),
+        "modelSeconds": round(model_seconds, 6),
+        "feasibilitySeconds": round(feasibility_seconds, 6),
+    }
+
+    if feasibility_status not in {"OPTIMAL", "FEASIBLE"}:
+        diagnostics["optimizationSeconds"] = 0.0
+        diagnostics["solveSeconds"] = round(feasibility_seconds, 6)
+        diagnostics["totalSeconds"] = round(perf_counter() - started, 6)
+        return MultiDayScheduleResult(
+            status=feasibility_status,
+            objective_value=0.0,
+            sessions=[],
+            diagnostics=diagnostics,
         )
 
-        scheduled.append(
-            MultiDayScheduledSession(
-                occurrence_id=candidate.occurrence_id,
-                group=group_by_id[candidate.teaching_group_id],
-                date=candidate.date,
-                start=candidate.start,
-                end=candidate.end,
-                instructors=assigned,
-                staffing_assignments=staffing_assignments,
-                room=room_by_id[candidate.room_id],
+    emit(
+        phase="SOLVING",
+        phaseLabel="Optimizing quality",
+        message=(
+            f"Feasible timetable found in {feasibility_seconds:.1f}s. "
+            f"Optimizing room, staffing and time preferences."
+        ),
+    )
+
+    # Save the first solution before the optimization pass. If the remaining
+    # time budget is too small or optimization returns UNKNOWN, this solution is
+    # still valid and should be returned to the product.
+    def selected_solution(
+        solver: cp_model.CpSolver,
+    ) -> tuple[
+        list[MultiDayScheduledSession],
+        float,
+    ]:
+        scheduled: list[MultiDayScheduledSession] = []
+        objective = 0.0
+
+        for occurrence in occurrences:
+            selected_date: str | None = None
+            for date in occurrence.allowed_dates:
+                date_var = date_vars.get((occurrence.id, date))
+                if date_var is not None and solver.boolean_value(date_var):
+                    selected_date = date
+                    break
+
+            if selected_date is None:
+                raise MultiDayScheduleError(
+                    f"Solver did not select a date for occurrence {occurrence.id}."
+                )
+
+            start = int(
+                solver.value(start_vars[(occurrence.id, selected_date)])
+            )
+            options = resource_options_by_occurrence[occurrence.id]
+            selected_option: _ResourceOption | None = None
+
+            for option_index, option in enumerate(options):
+                if solver.boolean_value(
+                    option_vars[(occurrence.id, option_index)]
+                ):
+                    selected_option = option
+                    break
+
+            if selected_option is None:
+                raise MultiDayScheduleError(
+                    f"Solver did not select resources for occurrence {occurrence.id}."
+                )
+
+            assigned = tuple(
+                instructor_by_id[instructor_id]
+                for instructor_id in selected_option.instructor_ids
+            )
+            staffing_assignments = tuple(
+                (role, instructor)
+                for role, instructor in zip(
+                    selected_option.staffing_roles,
+                    assigned,
+                )
+            )
+            group = group_by_id[occurrence.teaching_group_id]
+
+            scheduled.append(
+                MultiDayScheduledSession(
+                    occurrence_id=occurrence.id,
+                    group=group,
+                    date=selected_date,
+                    start=start,
+                    end=start + occurrence.duration_minutes,
+                    instructors=assigned,
+                    staffing_assignments=staffing_assignments,
+                    room=room_by_id[selected_option.room_id],
+                )
+            )
+
+            objective += selected_option.assignment_penalty
+            objective += max(0, start - 8 * 60) // 15
+
+        scheduled.sort(
+            key=lambda session: (
+                session.date,
+                session.start,
+                session.end,
+                session.occurrence_id,
             )
         )
 
-    scheduled.sort(key=lambda item: (item.date, item.start, item.group.id))
+        return scheduled, objective
+
+    feasible_sessions, feasible_objective = selected_solution(
+        feasibility_solver
+    )
+
+    remaining_seconds = max(0.0, max_time_seconds - feasibility_seconds)
+    optimization_seconds = 0.0
+    final_status = "FEASIBLE"
+    final_sessions = feasible_sessions
+    final_objective = feasible_objective
+
+    if remaining_seconds >= 0.25:
+        # Hint the complete feasible solution into the optimization pass.
+        for variable in date_vars.values():
+            model.add_hint(variable, feasibility_solver.value(variable))
+        for variable in start_vars.values():
+            model.add_hint(variable, feasibility_solver.value(variable))
+        for variable in option_vars.values():
+            model.add_hint(variable, feasibility_solver.value(variable))
+        for variable in chosen_start_vars.values():
+            model.add_hint(variable, feasibility_solver.value(variable))
+
+        objective_terms = [
+            time_penalty_vars[occurrence.id]
+            for occurrence in occurrences
+        ]
+        for occurrence in occurrences:
+            for option_index, option in enumerate(
+                resource_options_by_occurrence[occurrence.id]
+            ):
+                objective_terms.append(
+                    option.assignment_penalty
+                    * option_vars[(occurrence.id, option_index)]
+                )
+
+        model.minimize(sum(objective_terms))
+
+        optimization_solver = cp_model.CpSolver()
+        optimization_solver.parameters.max_time_in_seconds = remaining_seconds
+        optimization_solver.parameters.num_workers = 8
+
+        optimization_started = perf_counter()
+        optimization_status_code = optimization_solver.solve(model)
+        optimization_seconds = perf_counter() - optimization_started
+        optimization_status = optimization_solver.status_name(
+            optimization_status_code
+        )
+
+        if optimization_status in {"OPTIMAL", "FEASIBLE"}:
+            final_sessions, final_objective = selected_solution(
+                optimization_solver
+            )
+            final_status = optimization_status
+
+    diagnostics["optimizationSeconds"] = round(
+        optimization_seconds,
+        6,
+    )
+    diagnostics["solveSeconds"] = round(
+        feasibility_seconds + optimization_seconds,
+        6,
+    )
+    diagnostics["totalSeconds"] = round(
+        perf_counter() - started,
+        6,
+    )
 
     return MultiDayScheduleResult(
-        status=status,
-        objective_value=solver.objective_value,
-        sessions=scheduled,
+        status=final_status,
+        objective_value=final_objective,
+        sessions=final_sessions,
+        diagnostics=diagnostics,
     )

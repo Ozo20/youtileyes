@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 
 from .contracts import (
     ScheduledSessionOutput,
@@ -136,7 +137,10 @@ def _run_single_day(payload: SolverInput) -> SolverOutput:
     )
 
 
-def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
+def _run_planning_horizon(
+    payload: SolverInput,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> SolverOutput:
     if payload.planning_window is None:
         raise ValueError("Solver contract 1.2 requires planning_window")
 
@@ -184,14 +188,62 @@ def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
     all_sessions: list[ScheduledSessionOutput] = []
     objective_total = 0.0
     week_statuses: dict[str, str] = {}
+    week_diagnostics: dict[str, dict[str, object]] = {}
+    ordered_weeks = sorted(occurrences_by_week)
+    total_weeks = len(ordered_weeks)
 
-    for week_start in sorted(occurrences_by_week):
+    for week_index, week_start in enumerate(ordered_weeks, start=1):
         occurrences = occurrences_by_week[week_start]
+
+        if progress_callback is not None:
+            completed = week_index - 1
+            progress_callback(
+                {
+                    "phase": "SOLVING",
+                    "phaseLabel": "Optimizing",
+                    "percent": round((completed / max(total_weeks, 1)) * 94) + 3,
+                    "currentWeek": week_index,
+                    "totalWeeks": total_weeks,
+                    "weekStartDate": week_start,
+                    "message": f"Optimizing week {week_index} of {total_weeks}.",
+                }
+            )
         allowed_dates = {
             date
             for occurrence in occurrences
             for date in occurrence.allowed_dates
         }
+
+        def week_progress(event: dict[str, object]) -> None:
+            if progress_callback is None:
+                return
+
+            phase = str(event.get("phase", "SOLVING"))
+            if phase == "BUILDING_MODEL":
+                phase_fraction = 0.30
+            elif phase == "SOLVING":
+                phase_fraction = 0.70
+            else:
+                phase_fraction = 0.50
+
+            percent = round(
+                3
+                + (
+                    (week_index - 1 + phase_fraction)
+                    / max(total_weeks, 1)
+                )
+                * 94
+            )
+
+            progress_callback(
+                {
+                    **event,
+                    "percent": min(97, percent),
+                    "currentWeek": week_index,
+                    "totalWeeks": total_weeks,
+                    "weekStartDate": week_start,
+                }
+            )
 
         result = solve_multi_day_week(
             occurrences=occurrences,
@@ -204,9 +256,28 @@ def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
             instructor_blocks=[block for block in instructor_blocks if block.date in allowed_dates],
             student_blocks=[block for block in student_blocks if block.date in allowed_dates],
             room_blocks=[block for block in room_blocks if block.date in allowed_dates],
+            progress_callback=week_progress,
         )
 
         week_statuses[week_start] = result.status
+        week_diagnostics[week_start] = result.diagnostics
+
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "phase": "SOLVING",
+                    "phaseLabel": "Optimizing",
+                    "percent": round((week_index / max(total_weeks, 1)) * 94) + 3,
+                    "currentWeek": week_index,
+                    "totalWeeks": total_weeks,
+                    "weekStartDate": week_start,
+                    "message": (
+                        f"Week {week_index} of {total_weeks} finished "
+                        f"with {result.status}."
+                    ),
+                }
+            )
+
         if result.status not in {"OPTIMAL", "FEASIBLE"}:
             return SolverOutput(
                 schema_version=payload.schema_version,
@@ -225,6 +296,7 @@ def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
                     },
                     "failedWeekStartDate": week_start,
                     "weekStatuses": week_statuses,
+                    "weekDiagnostics": week_diagnostics,
                 },
             )
 
@@ -281,13 +353,17 @@ def _run_planning_horizon(payload: SolverInput) -> SolverOutput:
             "inputTeachingOccurrenceCount": len(payload.teaching_occurrences),
             "plannedWeekCount": len(week_statuses),
             "weekStatuses": week_statuses,
+            "weekDiagnostics": week_diagnostics,
             "resourcePreferenceModel": True,
             "planningHorizonModel": True,
         },
     )
 
 
-def run_solver(payload: SolverInput) -> SolverOutput:
+def run_solver(
+    payload: SolverInput,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> SolverOutput:
     if payload.schema_version in {"1.2", "1.3"}:
-        return _run_planning_horizon(payload)
+        return _run_planning_horizon(payload, progress_callback)
     return _run_single_day(payload)
