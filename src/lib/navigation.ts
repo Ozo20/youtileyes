@@ -2,8 +2,10 @@ import {
   BadgeCheck,
   BookOpenCheck,
   CalendarDays,
+  CalendarRange,
   DoorOpen,
   FileClock,
+  GitBranch,
   GraduationCap,
   LayoutDashboard,
   MapPin,
@@ -60,9 +62,19 @@ export const portalNavigation = [
     icon: MapPin,
   },
   {
+    label: "Base plan",
+    href: "/planning/base-plan",
+    icon: CalendarRange,
+  },
+  {
     label: "Planning",
     href: "/planning",
     icon: SlidersHorizontal,
+  },
+  {
+    label: "Revisions",
+    href: "/planning/revisions",
+    icon: GitBranch,
   },
   {
     label: "History",

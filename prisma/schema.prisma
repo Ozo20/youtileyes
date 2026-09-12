@@ -60,6 +60,18 @@ enum PlanningScopeStatus {
   ARCHIVED
 }
 
+enum DistributionFormat {
+  PDF
+  CSV
+  JSON
+}
+
+enum DistributionStatus {
+  GENERATED
+  DELIVERED
+  FAILED
+}
+
 enum EventType {
   CREATED
   UPDATED
@@ -157,13 +169,14 @@ enum RequirementUnit {
 }
 
 model Tenant {
-  id        String       @id @default(uuid())
-  name      String
-  code      String       @unique
-  status    TenantStatus @default(ACTIVE)
-  timezone  String       @default("Europe/Oslo")
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  id                       String       @id @default(uuid())
+  name                     String
+  code                     String       @unique
+  status                   TenantStatus @default(ACTIVE)
+  timezone                 String       @default("Europe/Oslo")
+  recoveryApprovalRequired Boolean      @default(true)
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
 
   organisationUnits              OrganisationUnit[]
   locations                      Location[]
@@ -217,12 +230,17 @@ model Tenant {
   scenarioSessionInstructors ScenarioSessionInstructor[]
   scenarioSessionStudents    ScenarioSessionStudent[]
 
-  solverJobs           SolverJob[]
-  solverRuns           SolverRun[]
-  solverObjectives     SolverObjective[]
-  constraintViolations ConstraintViolation[]
-  scenarioMetrics      ScenarioMetric[]
-  scenarioChanges      ScenarioChange[]
+  solverJobs                  SolverJob[]
+  solverRuns                  SolverRun[]
+  solverObjectives            SolverObjective[]
+  constraintViolations        ConstraintViolation[]
+  scenarioMetrics             ScenarioMetric[]
+  scenarioChanges             ScenarioChange[]
+  recoveryCases               RecoveryCase[]
+  recoveryDisruptions         RecoveryDisruption[]
+  recoveryCaseReviewSteps     RecoveryCaseReviewStep[]
+  recoveryCaseReviewDecisions RecoveryCaseReviewDecision[]
+  planDistributions           PlanDistribution[]
 
   @@index([status])
 }
@@ -894,6 +912,7 @@ model TeachingGroup {
 model TeachingRequirement {
   id                     String                   @id @default(uuid())
   tenantId               String
+  planId                 String
   teachingGroupId        String
   academicPeriodId       String
   totalMinutes           Int
@@ -908,12 +927,14 @@ model TeachingRequirement {
   updatedAt              DateTime                 @updatedAt
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan           Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
   teachingGroup  TeachingGroup  @relation(fields: [teachingGroupId], references: [id], onDelete: Cascade)
   academicPeriod AcademicPeriod @relation(fields: [academicPeriodId], references: [id], onDelete: Restrict)
 
   weeklyAllocations TeachingRequirementWeek[]
 
-  @@unique([tenantId, teachingGroupId, academicPeriodId])
+  @@unique([tenantId, planId, teachingGroupId])
+  @@index([tenantId, planId])
   @@index([tenantId, academicPeriodId])
   @@index([tenantId, teachingGroupId])
   @@index([tenantId, active])
@@ -1336,9 +1357,13 @@ model Plan {
   basedOnPlan  Plan?  @relation("PlanVersionHistory", fields: [basedOnPlanId], references: [id], onDelete: Restrict)
   derivedPlans Plan[] @relation("PlanVersionHistory")
 
-  scenarios       PlanScenario[]
-  sessions        Session[]
-  reviewWorkflows PlanReviewWorkflow[]
+  scenarios              PlanScenario[]
+  sessions               Session[]
+  reviewWorkflows        PlanReviewWorkflow[]
+  recoveryCases          RecoveryCase[]
+  publishedRecoveryCases RecoveryCase[]        @relation("RecoveryCasePublishedPlan")
+  distributions          PlanDistribution[]
+  teachingRequirements   TeachingRequirement[]
 
   @@unique([tenantId, planningScopeId, version])
   @@index([tenantId, status])
@@ -1431,10 +1456,12 @@ model PlanScenario {
 
   sessions ScenarioSession[]
 
-  solverJobs SolverJob[]
-  objectives SolverObjective[]
-  metrics    ScenarioMetric[]
-  changes    ScenarioChange[]
+  solverJobs         SolverJob[]
+  objectives         SolverObjective[]
+  metrics            ScenarioMetric[]
+  changes            ScenarioChange[]
+  recoveryProposals  RecoveryCaseProposal[]
+  basedRecoveryCases RecoveryCase[]         @relation("RecoveryCaseBaseScenario")
 
   @@index([tenantId, planId])
   @@index([tenantId, status])
@@ -1474,10 +1501,11 @@ model Session {
 }
 
 model SessionInstructor {
-  id           String @id @default(uuid())
+  id           String           @id @default(uuid())
   tenantId     String
   sessionId    String
   instructorId String
+  role         StaffingRoleType @default(LEAD)
 
   tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   session    Session    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -1630,11 +1658,14 @@ model SolverJob {
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   planScenario PlanScenario @relation(fields: [planScenarioId], references: [id], onDelete: Cascade)
 
-  runs SolverRun[]
+  runs           SolverRun[]
+  recoveryCase   RecoveryCase? @relation(fields: [recoveryCaseId], references: [id], onDelete: SetNull)
+  recoveryCaseId String?
 
   @@index([tenantId, status])
   @@index([tenantId, planScenarioId])
   @@index([tenantId, queuedAt])
+  @@index([tenantId, recoveryCaseId])
 }
 
 model SolverRun {
@@ -1750,4 +1781,178 @@ model ScenarioChange {
   @@index([tenantId, scenarioSessionId])
   @@index([tenantId, sourceSessionId])
   @@index([tenantId, changeType])
+}
+
+enum RecoveryCaseStatus {
+  OPEN
+  GENERATING
+  READY
+  ACCEPTED
+  CLOSED
+}
+
+enum RecoveryCaseReviewStatus {
+  NOT_REQUIRED
+  DRAFT
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  RETURNED
+}
+
+enum RecoveryDisruptionType {
+  INSTRUCTOR_UNAVAILABLE
+  ROOM_UNAVAILABLE
+}
+
+enum RecoveryProposalStatus {
+  CURRENT
+  STALE
+  ACCEPTED
+  REJECTED
+}
+
+model RecoveryCase {
+  id                   String                   @id @default(uuid())
+  tenantId             String
+  planId               String
+  baseScenarioId       String
+  basePlanVersion      Int
+  name                 String
+  status               RecoveryCaseStatus       @default(OPEN)
+  version              Int                      @default(1)
+  acceptedScenarioId   String?
+  approvalRequired     Boolean
+  reviewStatus         RecoveryCaseReviewStatus @default(DRAFT)
+  submittedForReviewAt DateTime?
+  approvedAt           DateTime?
+  publishedPlanId      String?
+  publishedAt          DateTime?
+  publishedByName      String?
+  createdByName        String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan          Plan         @relation(fields: [planId], references: [id], onDelete: Cascade)
+  baseScenario  PlanScenario @relation("RecoveryCaseBaseScenario", fields: [baseScenarioId], references: [id], onDelete: Restrict)
+  publishedPlan Plan?        @relation("RecoveryCasePublishedPlan", fields: [publishedPlanId], references: [id], onDelete: SetNull)
+
+  disruptions RecoveryDisruption[]
+  proposals   RecoveryCaseProposal[]
+  solverJobs  SolverJob[]
+  reviewSteps RecoveryCaseReviewStep[]
+
+  @@index([tenantId, planId, status])
+  @@index([tenantId, baseScenarioId])
+  @@index([tenantId, publishedPlanId])
+}
+
+model RecoveryDisruption {
+  id             String                 @id @default(uuid())
+  tenantId       String
+  recoveryCaseId String
+  type           RecoveryDisruptionType
+  resourceId     String
+  resourceLabel  String
+  startDate      DateTime               @db.Date
+  endDate        DateTime               @db.Date
+  startMinute    Int?
+  endMinute      Int?
+  active         Boolean                @default(true)
+  createdByName  String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  recoveryCase RecoveryCase @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, recoveryCaseId, active])
+  @@index([tenantId, type, resourceId])
+}
+
+model RecoveryCaseProposal {
+  id             String                 @id @default(uuid())
+  tenantId       String
+  recoveryCaseId String
+  scenarioId     String
+  caseVersion    Int
+  status         RecoveryProposalStatus @default(CURRENT)
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  recoveryCase RecoveryCase @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+  scenario     PlanScenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+
+  @@unique([recoveryCaseId, scenarioId])
+  @@index([tenantId, recoveryCaseId, status])
+  @@index([tenantId, scenarioId])
+}
+
+model RecoveryCaseReviewStep {
+  id             String               @id @default(uuid())
+  tenantId       String
+  recoveryCaseId String
+  caseVersion    Int
+  stage          Int
+  position       Int                  @default(1)
+  name           String
+  reviewerRole   String?
+  reviewerId     String?
+  reviewerName   String?
+  required       Boolean              @default(true)
+  status         PlanReviewStepStatus @default(PENDING)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  recoveryCase RecoveryCase @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+
+  decisions RecoveryCaseReviewDecision[]
+
+  @@unique([tenantId, recoveryCaseId, caseVersion, stage, position])
+  @@index([tenantId, recoveryCaseId, caseVersion])
+  @@index([tenantId, reviewerId, status])
+}
+
+model RecoveryCaseReviewDecision {
+  id        String                 @id @default(uuid())
+  tenantId  String
+  stepId    String
+  decision  PlanReviewDecisionType
+  actorId   String?
+  actorName String?
+  comment   String?
+  decidedAt DateTime               @default(now())
+
+  tenant Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  step   RecoveryCaseReviewStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, stepId, decidedAt])
+  @@index([tenantId, actorId, decidedAt])
+}
+
+model PlanDistribution {
+  id              String             @id @default(uuid())
+  tenantId        String
+  planId          String
+  format          DistributionFormat
+  status          DistributionStatus @default(GENERATED)
+  fileName        String
+  contentType     String
+  contentHash     String
+  sizeBytes       Int
+  generatedByName String?
+  generatedAt     DateTime           @default(now())
+  metadata        Json?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, planId, generatedAt])
+  @@index([tenantId, format, generatedAt])
+  @@index([tenantId, status, generatedAt])
 }

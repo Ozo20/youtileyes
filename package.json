@@ -9,7 +9,6 @@
     "lint": "eslint",
     "db:seed": "tsx prisma/seed.ts",
     "solver:input": "tsx scripts/build-solver-input.ts",
-    "solver:persist": "tsx scripts/persist-solver-output.ts",
     "solver:test:core": "PYTHONPATH=. python solver/tests/core_scheduler.py",
     "solver:test:preferences": "PYTHONPATH=. python solver/tests/resource_preferences.py",
     "solver:test:contract": "PYTHONPATH=. python solver/tests/contract_v1_2.py",
@@ -29,7 +28,10 @@
     "planning:resource-recovery:check": "tsx scripts/check-resource-recovery-scenario.ts",
     "solver:test:staffing": "PYTHONPATH=. python solver/tests/staffing_roles.py",
     "solver:test:contract:1.3": "PYTHONPATH=. python solver/tests/contract_v1_3.py",
-    "planning:check:multi-instructor-persistence": "tsx scripts/check-multi-instructor-persistence.ts"
+    "planning:check:multi-instructor-persistence": "tsx scripts/check-multi-instructor-persistence.ts",
+    "solver:job": "tsx scripts/process-solver-job.ts",
+    "solver:job:queued": "tsx scripts/process-next-solver-job.ts",
+    "solver:recovery-case": "tsx scripts/process-recovery-case-job.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

@@ -48,6 +48,7 @@ async function main() {
   const requirements = await prisma.teachingRequirement.findMany({
     where: {
       tenantId: tenant.id,
+      planId: plan.id,
       academicPeriodId: plan.academicPeriodId,
       active: true,
     },

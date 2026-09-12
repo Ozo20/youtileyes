@@ -117,49 +117,136 @@ export default async function SchedulePage({
  const currentView =
    params.view === "week" ? "week" : "day";
 
- const scenario = await prisma.planScenario.findFirst({
+ const today = new Date();
+ const todayUtc = new Date(
+   Date.UTC(
+     today.getUTCFullYear(),
+     today.getUTCMonth(),
+     today.getUTCDate(),
+   ),
+ );
+
+ const effectivePlan = await prisma.plan.findFirst({
    where: {
-     name: "Initial solver scenario",
+     status: {
+       in: ["PUBLISHED", "SUPERSEDED"],
+     },
+     effectiveFrom: {
+       lte: todayUtc,
+     },
+     OR: [
+       { effectiveTo: null },
+       {
+         effectiveTo: {
+           gte: todayUtc,
+         },
+       },
+     ],
    },
    orderBy: {
-     generatedAt: "desc",
+     version: "desc",
    },
-   include: {
-     plan: {
-       include: {
-         planningScope: true,
-       },
-     },
-     sessions: {
-       include: {
-         teachingGroup: {
-           include: {
-             course: true,
-           },
-         },
-         room: true,
-         instructors: {
-           include: {
-             instructor: true,
-           },
-         },
-         students: {
-           include: {
-             student: true,
-           },
-         },
-       },
-       orderBy: [
-         {
-           date: "asc",
-         },
-         {
-           startMinute: "asc",
-         },
-       ],
-     },
+   select: {
+     id: true,
    },
  });
+
+ const publishedScenario = effectivePlan
+   ? await prisma.planScenario.findFirst({
+       where: {
+         planId: effectivePlan.id,
+         status: "ACCEPTED",
+         generationConfig: {
+           path: ["type"],
+           equals: "PUBLISHED_BASELINE",
+         },
+       },
+       orderBy: {
+         generatedAt: "desc",
+       },
+       include: {
+         plan: {
+           include: {
+             planningScope: true,
+           },
+         },
+         sessions: {
+           include: {
+             teachingGroup: {
+               include: {
+                 course: true,
+               },
+             },
+             room: true,
+             instructors: {
+               include: {
+                 instructor: true,
+               },
+             },
+             students: {
+               include: {
+                 student: true,
+               },
+             },
+           },
+           orderBy: [
+             {
+               date: "asc",
+             },
+             {
+               startMinute: "asc",
+             },
+           ],
+         },
+       },
+     })
+   : null;
+
+ const scenario =
+   publishedScenario ??
+   (await prisma.planScenario.findFirst({
+     where: {
+       name: "Initial solver scenario",
+     },
+     orderBy: {
+       generatedAt: "desc",
+     },
+     include: {
+         plan: {
+           include: {
+             planningScope: true,
+           },
+         },
+         sessions: {
+           include: {
+             teachingGroup: {
+               include: {
+                 course: true,
+               },
+             },
+             room: true,
+             instructors: {
+               include: {
+                 instructor: true,
+               },
+             },
+             students: {
+               include: {
+                 student: true,
+               },
+             },
+           },
+           orderBy: [
+             {
+               date: "asc",
+             },
+             {
+               startMinute: "asc",
+             },
+           ],
+         },
+       },
+   }));
 
  if (!scenario) {
    return (

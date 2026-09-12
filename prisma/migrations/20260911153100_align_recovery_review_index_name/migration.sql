@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "RecoveryCaseReviewStep_tenantId_recoveryCaseId_caseVersion_stag" RENAME TO "RecoveryCaseReviewStep_tenantId_recoveryCaseId_caseVersion__key";

@@ -4,7 +4,24 @@ import { writeFile } from "node:fs/promises";
 import { prisma } from "../src/lib/prisma";
 
 const SCHEMA_VERSION = "1.3";
-const OUTPUT_PATH = "/tmp/youtileyes_solver_input.json";
+const DEFAULT_OUTPUT_PATH = "/tmp/youtileyes_solver_input.json";
+
+function parseArgs() {
+  const args = new Map<string, string>();
+
+  for (let index = 2; index < process.argv.length; index += 2) {
+    const key = process.argv[index];
+    const value = process.argv[index + 1];
+
+    if (!key || !value || !key.startsWith("--")) continue;
+    args.set(key.slice(2), value);
+  }
+
+  return {
+    scenarioId: args.get("scenario") ?? null,
+    outputPath: args.get("output") ?? DEFAULT_OUTPUT_PATH,
+  };
+}
 
 function clock(hour: number, minute: number): number {
   return hour * 60 + minute;
@@ -69,18 +86,35 @@ function exceptionBlockForDate(exception: { startAt: Date; endAt: Date }, date: 
 }
 
 async function main() {
+  const args = parseArgs();
+
   const tenant = await prisma.tenant.findUnique({ where: { code: "DEMO" } });
   if (!tenant) {
     throw new Error('Demo tenant "DEMO" was not found. Run npm run db:seed first.');
   }
 
-  const scenario = await prisma.planScenario.findFirst({
-    where: { tenantId: tenant.id, name: "Initial solver scenario" },
-    orderBy: { createdAt: "desc" },
-    include: {
-      plan: true,
-    },
-  });
+  const scenario = args.scenarioId
+    ? await prisma.planScenario.findFirst({
+        where: {
+          id: args.scenarioId,
+          tenantId: tenant.id,
+        },
+        include: {
+          plan: true,
+        },
+      })
+    : await prisma.planScenario.findFirst({
+        where: {
+          tenantId: tenant.id,
+          name: "Initial solver scenario",
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        include: {
+          plan: true,
+        },
+      });
   if (!scenario) {
     throw new Error("Demo PlanScenario was not found.");
   }
@@ -182,6 +216,7 @@ async function main() {
       weekStartDate: { gte: firstWeek, lte: planningEndDate },
       teachingRequirement: {
         active: true,
+        planId: plan.id,
         academicPeriodId: plan.academicPeriodId,
       },
     },
@@ -517,10 +552,10 @@ async function main() {
     },
   };
 
-  await writeFile(OUTPUT_PATH, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await writeFile(args.outputPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
 
   console.log("Solver input generated");
-  console.log(`Path: ${OUTPUT_PATH}`);
+  console.log(`Path: ${args.outputPath}`);
   console.log(`Schema: ${SCHEMA_VERSION}`);
   console.log(`Tenant: ${tenant.name}`);
   console.log(`Scenario: ${scenario.name}`);

@@ -47,7 +47,12 @@ async function buildInputs(): Promise<{
   const planningEndExclusive = endOfUtcDay(planningEndDate);
 
   const requirements = await prisma.teachingRequirement.findMany({
-    where: { tenantId: tenant.id, academicPeriodId: planRecord.academicPeriodId, active: true },
+    where: {
+      tenantId: tenant.id,
+      planId: planRecord.id,
+      academicPeriodId: planRecord.academicPeriodId,
+      active: true,
+    },
     include: {
       teachingGroup: { include: { course: true, studentCohort: true } },
       weeklyAllocations: { orderBy: { weekStartDate: "asc" } },

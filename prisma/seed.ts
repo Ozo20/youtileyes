@@ -496,6 +496,59 @@ async function main() {
     ],
   });
 
+  const planningScope = await prisma.planningScope.upsert({
+    where: {
+      tenantId_code: {
+        tenantId: tenant.id,
+        code: "DEMO-SCOPE",
+      },
+    },
+    update: {
+      academicPeriodId: academicPeriod.id,
+      status: "ACTIVE",
+    },
+    create: {
+      tenantId: tenant.id,
+      academicPeriodId: academicPeriod.id,
+      name: "Demo planning scope",
+      code: "DEMO-SCOPE",
+      status: "ACTIVE",
+    },
+  });
+
+  const plan = await prisma.plan.upsert({
+    where: {
+      tenantId_planningScopeId_version: {
+        tenantId: tenant.id,
+        planningScopeId: planningScope.id,
+        version: 1,
+      },
+    },
+    update: {
+      planningAsOfDate: new Date("2026-09-01T00:00:00.000Z"),
+      frozenThroughDate: new Date("2026-09-13T00:00:00.000Z"),
+      planningStartDate: new Date("2026-09-14T00:00:00.000Z"),
+      planningEndDate: new Date("2026-12-18T00:00:00.000Z"),
+      effectiveFrom: new Date("2026-09-14T00:00:00.000Z"),
+      effectiveTo: new Date("2026-12-18T00:00:00.000Z"),
+    },
+    create: {
+      tenantId: tenant.id,
+      planningScopeId: planningScope.id,
+      academicPeriodId: academicPeriod.id,
+      name: "Demo plan",
+      version: 1,
+      status: "DRAFT",
+      planningAsOfDate: new Date("2026-09-01T00:00:00.000Z"),
+      frozenThroughDate: new Date("2026-09-13T00:00:00.000Z"),
+      planningStartDate: new Date("2026-09-14T00:00:00.000Z"),
+      planningEndDate: new Date("2026-12-18T00:00:00.000Z"),
+      effectiveFrom: new Date("2026-09-14T00:00:00.000Z"),
+      effectiveTo: new Date("2026-12-18T00:00:00.000Z"),
+    },
+  });
+
+
   const teachingRequirementDefinitions = [
     ["G1", 1620, 90, 180],
     ["G2", 810, 45, 90],
@@ -506,10 +559,10 @@ async function main() {
   for (const [groupCode, totalMinutes, preferredWeeklyMinutes, maxWeeklyMinutes] of teachingRequirementDefinitions) {
     await prisma.teachingRequirement.upsert({
       where: {
-        tenantId_teachingGroupId_academicPeriodId: {
+        tenantId_planId_teachingGroupId: {
           tenantId: tenant.id,
+          planId: plan.id,
           teachingGroupId: teachingGroupByCode[groupCode].id,
-          academicPeriodId: academicPeriod.id,
         },
       },
       update: {
@@ -523,6 +576,7 @@ async function main() {
       },
       create: {
         tenantId: tenant.id,
+        planId: plan.id,
         teachingGroupId: teachingGroupByCode[groupCode].id,
         academicPeriodId: academicPeriod.id,
         totalMinutes,
@@ -710,6 +764,777 @@ async function main() {
     },
   });
 
+
+  // ---------------------------------------------------------------------------
+  // Expanded demo dataset
+  // ---------------------------------------------------------------------------
+  // The original seed intentionally started very small. The expanded dataset
+  // below keeps those records, but grows the same DEMO tenant into something
+  // closer to a realistic semester-planning exercise:
+  //
+  // - 4 classes / cohorts
+  // - 80 students
+  // - 8 subjects
+  // - 12 instructors
+  // - 8 rooms
+  // - 32 full-class teaching groups
+  // - 32 semester teaching requirements
+  // - daily timetable blocks
+  // - a full autumn-break closure plus selected activity / availability events
+  //
+  // Codes are deterministic and every record is upserted so the seed remains
+  // safe to run repeatedly.
+
+  const expandedRoomDefinitions = [
+    { code: "A10", capacity: 24 },
+    { code: "A11", capacity: 24 },
+    { code: "B14", capacity: 24 },
+    { code: "C20", capacity: 30 },
+    { code: "C21", capacity: 30 },
+    { code: "LAB1", capacity: 24 },
+    { code: "LAB2", capacity: 24 },
+    { code: "D30", capacity: 32 },
+  ] as const;
+
+  const expandedRooms = await Promise.all(
+    expandedRoomDefinitions.map((definition) =>
+      prisma.room.upsert({
+        where: {
+          tenantId_code: {
+            tenantId: tenant.id,
+            code: definition.code,
+          },
+        },
+        update: {
+          locationId: location.id,
+          name: definition.code,
+          capacity: definition.capacity,
+          active: true,
+        },
+        create: {
+          tenantId: tenant.id,
+          locationId: location.id,
+          name: definition.code,
+          code: definition.code,
+          capacity: definition.capacity,
+        },
+      }),
+    ),
+  );
+
+  const expandedRoomByCode = Object.fromEntries(
+    expandedRooms.map((room) => [room.code!, room]),
+  );
+
+  const extraCourseDefinitions = [
+    {
+      code: "SAM",
+      name: "Social Studies",
+      minutes: 45,
+      double: false,
+      maxSessionsPerDay: 2,
+    },
+    {
+      code: "HIS",
+      name: "History",
+      minutes: 45,
+      double: false,
+      maxSessionsPerDay: 2,
+    },
+    {
+      code: "GEO",
+      name: "Geography",
+      minutes: 45,
+      double: false,
+      maxSessionsPerDay: 2,
+    },
+    {
+      code: "IT",
+      name: "Information Technology",
+      minutes: 90,
+      double: true,
+      maxSessionsPerDay: 2,
+    },
+  ] as const;
+
+  const extraCourses = await Promise.all(
+    extraCourseDefinitions.map((definition) =>
+      prisma.course.upsert({
+        where: {
+          tenantId_code: {
+            tenantId: tenant.id,
+            code: definition.code,
+          },
+        },
+        update: {
+          name: definition.name,
+          preferredSessionMinutes: definition.minutes,
+          maxSessionMinutes: definition.minutes,
+          minSessionMinutes: 45,
+          allowDoubleSession: definition.double,
+          maxSessionsPerDay: definition.maxSessionsPerDay,
+          maxGroupSize: 24,
+          active: true,
+        },
+        create: {
+          tenantId: tenant.id,
+          code: definition.code,
+          name: definition.name,
+          preferredSessionMinutes: definition.minutes,
+          maxSessionMinutes: definition.minutes,
+          minSessionMinutes: 45,
+          allowDoubleSession: definition.double,
+          maxSessionsPerDay: definition.maxSessionsPerDay,
+          maxGroupSize: 24,
+        },
+      }),
+    ),
+  );
+
+  const allCourseByCode: Record<string, { id: string; code: string | null }> = {
+    ...courseByCode,
+    ...Object.fromEntries(extraCourses.map((course) => [course.code!, course])),
+  };
+
+  // Bring the original subjects up to the same class-size assumptions.
+  await prisma.course.updateMany({
+    where: {
+      tenantId: tenant.id,
+      code: { in: ["MAT", "FYS", "ENG", "NOR"] },
+    },
+    data: {
+      maxGroupSize: 24,
+    },
+  });
+
+  const extraInstructorDefinitions = [
+    ["T3", "Anna", "Berg", 100, 1200],
+    ["T4", "Morten", "Dahl", 100, 1200],
+    ["T5", "Ingrid", "Nilsen", 80, 960],
+    ["T6", "Thomas", "Moen", 100, 1200],
+    ["T7", "Silje", "Aune", 90, 1080],
+    ["T8", "Henrik", "Larsen", 100, 1200],
+    ["T9", "Maria", "Solberg", 80, 960],
+    ["T10", "Anders", "Vik", 100, 1200],
+    ["T11", "Elise", "Haugen", 100, 1200],
+    ["T12", "Jonas", "Lie", 80, 960],
+  ] as const;
+
+  const extraInstructors = await Promise.all(
+    extraInstructorDefinitions.map(
+      ([externalId, firstName, lastName, employmentPercentage, maxTeachingMinutesPerWeek]) =>
+        prisma.instructor.upsert({
+          where: {
+            tenantId_externalId_sourceSystem: {
+              tenantId: tenant.id,
+              externalId,
+              sourceSystem: "SEED",
+            },
+          },
+          update: {
+            firstName,
+            lastName,
+            status: "ACTIVE",
+            employmentPercentage,
+            maxTeachingMinutesPerWeek,
+            primaryOrganisationUnitId: organisation.id,
+            primaryLocationId: location.id,
+          },
+          create: {
+            tenantId: tenant.id,
+            externalId,
+            sourceSystem: "SEED",
+            firstName,
+            lastName,
+            employmentPercentage,
+            maxTeachingMinutesPerWeek,
+            primaryOrganisationUnitId: organisation.id,
+            primaryLocationId: location.id,
+          },
+        }),
+    ),
+  );
+
+  // Add realistic workload limits to the two original demo teachers as well.
+  await prisma.instructor.updateMany({
+    where: {
+      tenantId: tenant.id,
+      externalId: { in: ["T1", "T2"] },
+      sourceSystem: "SEED",
+    },
+    data: {
+      employmentPercentage: 100,
+      maxTeachingMinutesPerWeek: 1200,
+    },
+  });
+
+  const expandedInstructorByExternalId: Record<string, { id: string }> = {
+    ...instructorByExternalId,
+    ...Object.fromEntries(
+      extraInstructors.map((instructor) => [instructor.externalId!, instructor]),
+    ),
+  };
+
+  const expandedInstructorCourses = [
+    ["T1", "MAT", "PRIMARY", 100],
+    ["T1", "FYS", "PRIMARY", 100],
+    ["T2", "ENG", "PRIMARY", 100],
+    ["T2", "NOR", "PRIMARY", 100],
+    ["T3", "MAT", "PRIMARY", 100],
+    ["T3", "FYS", "SECONDARY", 110],
+    ["T4", "ENG", "PRIMARY", 100],
+    ["T4", "NOR", "SECONDARY", 110],
+    ["T5", "FYS", "PRIMARY", 100],
+    ["T5", "MAT", "SUPPORT", 130],
+    ["T6", "NOR", "PRIMARY", 100],
+    ["T6", "HIS", "PRIMARY", 100],
+    ["T7", "SAM", "PRIMARY", 100],
+    ["T7", "GEO", "PRIMARY", 100],
+    ["T8", "IT", "PRIMARY", 100],
+    ["T8", "MAT", "SECONDARY", 120],
+    ["T9", "ENG", "PRIMARY", 100],
+    ["T9", "SAM", "SECONDARY", 120],
+    ["T10", "HIS", "PRIMARY", 100],
+    ["T10", "GEO", "PRIMARY", 100],
+    ["T11", "IT", "PRIMARY", 100],
+    ["T11", "FYS", "SUPPORT", 130],
+    ["T12", "NOR", "PRIMARY", 100],
+    ["T12", "ENG", "SECONDARY", 120],
+  ] as const;
+
+  for (const [instructorExternalId, courseCode, qualificationLevel, priority] of expandedInstructorCourses) {
+    await prisma.instructorCourse.upsert({
+      where: {
+        tenantId_instructorId_courseId: {
+          tenantId: tenant.id,
+          instructorId: expandedInstructorByExternalId[instructorExternalId].id,
+          courseId: allCourseByCode[courseCode].id,
+        },
+      },
+      update: {
+        qualificationLevel,
+        priority,
+        active: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        instructorId: expandedInstructorByExternalId[instructorExternalId].id,
+        courseId: allCourseByCode[courseCode].id,
+        qualificationLevel,
+        priority,
+      },
+    });
+  }
+
+  // Eight ordinary 45-minute timetable blocks. Courses that prefer 90 minutes
+  // can later consume adjacent blocks when the long-horizon solver supports
+  // explicit double-block composition.
+  const timeBlockDefinitions = [
+    ["P1", 8 * 60 + 15, 9 * 60],
+    ["P2", 9 * 60 + 15, 10 * 60],
+    ["P3", 10 * 60 + 15, 11 * 60],
+    ["P4", 11 * 60 + 15, 12 * 60],
+    ["P5", 12 * 60 + 45, 13 * 60 + 30],
+    ["P6", 13 * 60 + 45, 14 * 60 + 30],
+    ["P7", 14 * 60 + 45, 15 * 60 + 30],
+    ["P8", 15 * 60 + 45, 16 * 60 + 30],
+  ] as const;
+
+  // TimeBlock currently has no natural-code unique key, so replace only the
+  // deterministic seed blocks and leave any manually created blocks untouched.
+  await prisma.timeBlock.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      name: { in: timeBlockDefinitions.map(([name]) => name) },
+    },
+  });
+
+  await prisma.timeBlock.createMany({
+    data: timeBlockDefinitions.map(([name, startMinute, endMinute]) => ({
+      tenantId: tenant.id,
+      name,
+      startMinute,
+      endMinute,
+      active: true,
+    })),
+  });
+
+  const cohortDefinitions = [
+    ["ST2A", "ST2A"],
+    ["ST2B", "ST2B"],
+    ["ST3A", "ST3A"],
+    ["ST3B", "ST3B"],
+  ] as const;
+
+  const expandedCohortByCode: Record<string, { id: string; code: string | null }> = {
+    ST2A: cohort,
+  };
+
+  for (const [code, name] of cohortDefinitions.slice(1)) {
+    const seededCohort = await prisma.studentCohort.upsert({
+      where: {
+        tenantId_code: {
+          tenantId: tenant.id,
+          code,
+        },
+      },
+      update: {
+        academicPeriodId: academicPeriod.id,
+        organisationUnitId: organisation.id,
+        type: "CLASS",
+        name,
+        active: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        academicPeriodId: academicPeriod.id,
+        organisationUnitId: organisation.id,
+        type: "CLASS",
+        name,
+        code,
+      },
+    });
+
+    expandedCohortByCode[code] = seededCohort;
+  }
+
+  const expandedStudentsByCohort: Record<string, Array<{ id: string }>> = {
+    ST2A: [...students],
+    ST2B: [],
+    ST3A: [],
+    ST3B: [],
+  };
+
+  // ST2A already contains S1-S5 from the small demo. Add 15 more students, and
+  // create 20 students in each of the other three classes: 80 students total.
+  const studentSeedDefinitions: Array<{
+    cohortCode: string;
+    externalId: string;
+    firstName: string;
+    lastName: string;
+  }> = [];
+
+  for (let index = 6; index <= 20; index += 1) {
+    studentSeedDefinitions.push({
+      cohortCode: "ST2A",
+      externalId: `ST2A-${String(index).padStart(2, "0")}`,
+      firstName: `Student ${index}`,
+      lastName: "ST2A",
+    });
+  }
+
+  for (const cohortCode of ["ST2B", "ST3A", "ST3B"] as const) {
+    for (let index = 1; index <= 20; index += 1) {
+      studentSeedDefinitions.push({
+        cohortCode,
+        externalId: `${cohortCode}-${String(index).padStart(2, "0")}`,
+        firstName: `Student ${index}`,
+        lastName: cohortCode,
+      });
+    }
+  }
+
+  for (const definition of studentSeedDefinitions) {
+    const student = await prisma.student.upsert({
+      where: {
+        tenantId_externalId_sourceSystem: {
+          tenantId: tenant.id,
+          externalId: definition.externalId,
+          sourceSystem: "SEED",
+        },
+      },
+      update: {
+        firstName: definition.firstName,
+        lastName: definition.lastName,
+        status: "ACTIVE",
+        primaryOrganisationUnitId: organisation.id,
+        primaryLocationId: location.id,
+      },
+      create: {
+        tenantId: tenant.id,
+        externalId: definition.externalId,
+        sourceSystem: "SEED",
+        firstName: definition.firstName,
+        lastName: definition.lastName,
+        primaryOrganisationUnitId: organisation.id,
+        primaryLocationId: location.id,
+      },
+    });
+
+    expandedStudentsByCohort[definition.cohortCode].push(student);
+
+    await prisma.studentCohortMember.upsert({
+      where: {
+        tenantId_studentCohortId_studentId: {
+          tenantId: tenant.id,
+          studentCohortId: expandedCohortByCode[definition.cohortCode].id,
+          studentId: student.id,
+        },
+      },
+      update: {},
+      create: {
+        tenantId: tenant.id,
+        studentCohortId: expandedCohortByCode[definition.cohortCode].id,
+        studentId: student.id,
+      },
+    });
+  }
+
+  const subjectDemand = {
+    MAT: { total: 4320, preferred: 240, min: 180, max: 360, priority: "CRITICAL" },
+    NOR: { total: 3240, preferred: 180, min: 135, max: 270, priority: "HIGH" },
+    ENG: { total: 2700, preferred: 150, min: 90, max: 225, priority: "HIGH" },
+    FYS: { total: 2160, preferred: 120, min: 90, max: 180, priority: "HIGH" },
+    IT:  { total: 2160, preferred: 120, min: 90, max: 180, priority: "NORMAL" },
+    SAM: { total: 1620, preferred: 90, min: 45, max: 135, priority: "NORMAL" },
+    HIS: { total: 1620, preferred: 90, min: 45, max: 135, priority: "NORMAL" },
+    GEO: { total: 1620, preferred: 90, min: 45, max: 135, priority: "NORMAL" },
+  } as const;
+
+  const subjectOrder = ["MAT", "NOR", "ENG", "FYS", "IT", "SAM", "HIS", "GEO"] as const;
+
+  // Preserve the original G1-G4 codes for ST2A and add deterministic codes for
+  // all remaining cohort/subject combinations.
+  const originalGroupCodeBySubject = {
+    MAT: "G1",
+    ENG: "G2",
+    FYS: "G3",
+    NOR: "G4",
+  } as const;
+
+  const expandedTeachingGroupByKey: Record<string, { id: string }> = {};
+
+  for (const [cohortCode] of cohortDefinitions) {
+    const cohortRecord = expandedCohortByCode[cohortCode];
+    const cohortStudents = expandedStudentsByCohort[cohortCode];
+
+    for (const subjectCode of subjectOrder) {
+      const groupCode =
+        cohortCode === "ST2A" &&
+        subjectCode in originalGroupCodeBySubject
+          ? originalGroupCodeBySubject[
+              subjectCode as keyof typeof originalGroupCodeBySubject
+            ]
+          : `${cohortCode}-${subjectCode}`;
+
+      const group = await prisma.teachingGroup.upsert({
+        where: {
+          tenantId_code: {
+            tenantId: tenant.id,
+            code: groupCode,
+          },
+        },
+        update: {
+          academicPeriodId: academicPeriod.id,
+          courseId: allCourseByCode[subjectCode].id,
+          studentCohortId: cohortRecord.id,
+          membershipMode: "FULL_COHORT",
+          schedulingPriority:
+            subjectDemand[subjectCode].priority === "CRITICAL"
+              ? 250
+              : subjectDemand[subjectCode].priority === "HIGH"
+                ? 220
+                : 180,
+          name: `${cohortCode} ${subjectCode}`,
+          status: "ACTIVE",
+          maxStudents: 24,
+        },
+        create: {
+          tenantId: tenant.id,
+          academicPeriodId: academicPeriod.id,
+          courseId: allCourseByCode[subjectCode].id,
+          studentCohortId: cohortRecord.id,
+          membershipMode: "FULL_COHORT",
+          schedulingPriority:
+            subjectDemand[subjectCode].priority === "CRITICAL"
+              ? 250
+              : subjectDemand[subjectCode].priority === "HIGH"
+                ? 220
+                : 180,
+          name: `${cohortCode} ${subjectCode}`,
+          code: groupCode,
+          status: "ACTIVE",
+          maxStudents: 24,
+        },
+      });
+
+      expandedTeachingGroupByKey[`${cohortCode}:${subjectCode}`] = group;
+
+      await prisma.teachingGroupStudent.deleteMany({
+        where: {
+          tenantId: tenant.id,
+          teachingGroupId: group.id,
+        },
+      });
+
+      await prisma.teachingGroupStudent.createMany({
+        data: cohortStudents.map((student) => ({
+          tenantId: tenant.id,
+          teachingGroupId: group.id,
+          studentId: student.id,
+        })),
+      });
+
+      const demand = subjectDemand[subjectCode];
+
+      await prisma.teachingRequirement.upsert({
+        where: {
+          tenantId_planId_teachingGroupId: {
+            tenantId: tenant.id,
+            planId: plan.id,
+            teachingGroupId: group.id,
+          },
+        },
+        update: {
+          totalMinutes: demand.total,
+          distributionMode: "EVEN_BY_TEACHING_CAPACITY",
+          minWeeklyMinutes: demand.min,
+          preferredWeeklyMinutes: demand.preferred,
+          maxWeeklyMinutes: demand.max,
+          carryoverAllowed: true,
+          priority: demand.priority,
+          active: true,
+        },
+        create: {
+          tenantId: tenant.id,
+          planId: plan.id,
+          teachingGroupId: group.id,
+          academicPeriodId: academicPeriod.id,
+          totalMinutes: demand.total,
+          distributionMode: "EVEN_BY_TEACHING_CAPACITY",
+          minWeeklyMinutes: demand.min,
+          preferredWeeklyMinutes: demand.preferred,
+          maxWeeklyMinutes: demand.max,
+          carryoverAllowed: true,
+          priority: demand.priority,
+        },
+      });
+    }
+  }
+
+  // Materialise student-level subject demand too. This gives later solver and
+  // reporting work enough data to test individual-vs-cohort requirement logic.
+  await prisma.studentCourseRequirement.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      academicPeriodId: academicPeriod.id,
+    },
+  });
+
+  const studentRequirementRows = Object.entries(expandedStudentsByCohort)
+    .flatMap(([, cohortStudents]) =>
+      cohortStudents.flatMap((student) =>
+        subjectOrder.map((subjectCode) => ({
+          tenantId: tenant.id,
+          studentId: student.id,
+          courseId: allCourseByCode[subjectCode].id,
+          academicPeriodId: academicPeriod.id,
+          requiredAmount: subjectDemand[subjectCode].total,
+          unit: "MINUTES" as const,
+          priority: subjectDemand[subjectCode].priority,
+          active: true,
+        })),
+      ),
+    );
+
+  await prisma.studentCourseRequirement.createMany({
+    data: studentRequirementRows,
+  });
+
+  // Room suitability creates meaningful trade-offs: sciences prefer labs, IT
+  // prefers C20/C21, and larger general rooms remain usable fallbacks.
+  const expandedRoomCoursePreferences = [
+    ["LAB1", "FYS", "PREFERRED", 0],
+    ["LAB2", "FYS", "PREFERRED", 0],
+    ["C20", "IT", "PREFERRED", 0],
+    ["C21", "IT", "PREFERRED", 0],
+    ["D30", "MAT", "PREFERRED", 0],
+    ["A10", "NOR", "PREFERRED", 0],
+    ["A11", "ENG", "PREFERRED", 0],
+    ["B14", "SAM", "PREFERRED", 0],
+    ["B14", "HIS", "PREFERRED", 0],
+    ["C20", "GEO", "PREFERRED", 0],
+  ] as const;
+
+  for (const [roomCode, courseCode, suitability, penalty] of expandedRoomCoursePreferences) {
+    await prisma.roomCoursePreference.upsert({
+      where: {
+        tenantId_roomId_courseId: {
+          tenantId: tenant.id,
+          roomId: expandedRoomByCode[roomCode].id,
+          courseId: allCourseByCode[courseCode].id,
+        },
+      },
+      update: {
+        suitability,
+        penalty,
+        active: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        roomId: expandedRoomByCode[roomCode].id,
+        courseId: allCourseByCode[courseCode].id,
+        suitability,
+        penalty,
+      },
+    });
+  }
+
+  // Autumn break: a complete no-teaching week. This is deliberately encoded in
+  // CalendarDay so Base Plan weekly allocation has to redistribute demand over
+  // the remaining teaching weeks.
+  for (
+    let date = new Date("2026-10-05T00:00:00.000Z");
+    date <= new Date("2026-10-09T00:00:00.000Z");
+    date = addUtcDays(date, 1)
+  ) {
+    await prisma.calendarDay.update({
+      where: {
+        tenantId_date: {
+          tenantId: tenant.id,
+          date,
+        },
+      },
+      data: {
+        dayType: "HOLIDAY",
+        name: "Autumn break",
+        teachingAllowed: false,
+      },
+    });
+  }
+
+  // A planning day creates a second, smaller disruption in another week.
+  await prisma.calendarDay.update({
+    where: {
+      tenantId_date: {
+        tenantId: tenant.id,
+        date: new Date("2026-11-13T00:00:00.000Z"),
+      },
+    },
+    data: {
+      dayType: "PLANNING_DAY",
+      name: "Staff planning day",
+      teachingAllowed: false,
+    },
+  });
+
+  // Different cohort activity days ensure not every class has identical weekly
+  // capacity.
+  const expandedActivityDays = [
+    ["ST2B", "2026-09-24", "ST2B activity day"],
+    ["ST3A", "2026-10-22", "ST3A activity day"],
+    ["ST3B", "2026-11-05", "ST3B activity day"],
+  ] as const;
+
+  for (const [cohortCode, dateIso, name] of expandedActivityDays) {
+    const existing = await prisma.planningException.findFirst({
+      where: {
+        tenantId: tenant.id,
+        studentCohortId: expandedCohortByCode[cohortCode].id,
+        type: "ACTIVITY_DAY",
+        name,
+      },
+    });
+
+    const data = {
+      status: "ACTIVE" as const,
+      impactMode: "BLOCK" as const,
+      startAt: new Date(`${dateIso}T06:00:00.000Z`),
+      endAt: new Date(`${dateIso}T14:00:00.000Z`),
+      description: `Seeded activity day for ${cohortCode}.`,
+    };
+
+    if (existing) {
+      await prisma.planningException.update({
+        where: { id: existing.id },
+        data,
+      });
+    } else {
+      await prisma.planningException.create({
+        data: {
+          tenantId: tenant.id,
+          studentCohortId: expandedCohortByCode[cohortCode].id,
+          type: "ACTIVITY_DAY",
+          name,
+          ...data,
+        },
+      });
+    }
+  }
+
+  // A few additional availability constraints provide realistic recovery and
+  // feasibility test cases without making the whole semester deliberately
+  // infeasible.
+  await prisma.instructorAvailability.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      reasonCode: "EXPANDED_SEED_BLOCK",
+    },
+  });
+
+  await prisma.instructorAvailability.createMany({
+    data: [
+      {
+        tenantId: tenant.id,
+        instructorId: expandedInstructorByExternalId["T5"].id,
+        date: new Date("2026-09-29T00:00:00.000Z"),
+        startMinute: 8 * 60,
+        endMinute: 12 * 60,
+        status: "UNAVAILABLE",
+        reasonCode: "EXPANDED_SEED_BLOCK",
+      },
+      {
+        tenantId: tenant.id,
+        instructorId: expandedInstructorByExternalId["T9"].id,
+        date: new Date("2026-10-20T00:00:00.000Z"),
+        startMinute: 12 * 60,
+        endMinute: 17 * 60,
+        status: "UNAVAILABLE",
+        reasonCode: "EXPANDED_SEED_BLOCK",
+      },
+      {
+        tenantId: tenant.id,
+        instructorId: expandedInstructorByExternalId["T11"].id,
+        date: new Date("2026-11-18T00:00:00.000Z"),
+        startMinute: 8 * 60,
+        endMinute: 17 * 60,
+        status: "UNAVAILABLE",
+        reasonCode: "EXPANDED_SEED_BLOCK",
+      },
+    ],
+  });
+
+  await prisma.roomAvailability.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      reasonCode: "EXPANDED_SEED_BLOCK",
+    },
+  });
+
+  await prisma.roomAvailability.createMany({
+    data: [
+      {
+        tenantId: tenant.id,
+        roomId: expandedRoomByCode["LAB1"].id,
+        date: new Date("2026-09-30T00:00:00.000Z"),
+        startMinute: 0,
+        endMinute: 24 * 60,
+        status: "UNAVAILABLE",
+        reasonCode: "EXPANDED_SEED_BLOCK",
+      },
+      {
+        tenantId: tenant.id,
+        roomId: expandedRoomByCode["C20"].id,
+        date: new Date("2026-10-27T00:00:00.000Z"),
+        startMinute: 8 * 60,
+        endMinute: 12 * 60,
+        status: "UNAVAILABLE",
+        reasonCode: "EXPANDED_SEED_BLOCK",
+      },
+    ],
+  });
+
+
   const loadProfile = await prisma.loadProfile.upsert({
     where: {
       tenantId_code: {
@@ -747,58 +1572,6 @@ async function main() {
     },
     data: {
       loadProfileId: loadProfile.id,
-    },
-  });
-
-  const planningScope = await prisma.planningScope.upsert({
-    where: {
-      tenantId_code: {
-        tenantId: tenant.id,
-        code: "DEMO-SCOPE",
-      },
-    },
-    update: {
-      academicPeriodId: academicPeriod.id,
-      status: "ACTIVE",
-    },
-    create: {
-      tenantId: tenant.id,
-      academicPeriodId: academicPeriod.id,
-      name: "Demo planning scope",
-      code: "DEMO-SCOPE",
-      status: "ACTIVE",
-    },
-  });
-
-  const plan = await prisma.plan.upsert({
-    where: {
-      tenantId_planningScopeId_version: {
-        tenantId: tenant.id,
-        planningScopeId: planningScope.id,
-        version: 1,
-      },
-    },
-    update: {
-      planningAsOfDate: new Date("2026-09-01T00:00:00.000Z"),
-      frozenThroughDate: new Date("2026-09-13T00:00:00.000Z"),
-      planningStartDate: new Date("2026-09-14T00:00:00.000Z"),
-      planningEndDate: new Date("2026-12-18T00:00:00.000Z"),
-      effectiveFrom: new Date("2026-09-14T00:00:00.000Z"),
-      effectiveTo: new Date("2026-12-18T00:00:00.000Z"),
-    },
-    create: {
-      tenantId: tenant.id,
-      planningScopeId: planningScope.id,
-      academicPeriodId: academicPeriod.id,
-      name: "Demo plan",
-      version: 1,
-      status: "DRAFT",
-      planningAsOfDate: new Date("2026-09-01T00:00:00.000Z"),
-      frozenThroughDate: new Date("2026-09-13T00:00:00.000Z"),
-      planningStartDate: new Date("2026-09-14T00:00:00.000Z"),
-      planningEndDate: new Date("2026-12-18T00:00:00.000Z"),
-      effectiveFrom: new Date("2026-09-14T00:00:00.000Z"),
-      effectiveTo: new Date("2026-12-18T00:00:00.000Z"),
     },
   });
 

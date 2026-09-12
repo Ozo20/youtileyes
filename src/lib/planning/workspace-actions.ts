@@ -1,6 +1,6 @@
 "use server";
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -10,6 +10,9 @@ import {
   PlanReviewStepStatus,
   PlanReviewWorkflowStatus,
   PlanStatus,
+  RecoveryCaseReviewStatus,
+  RecoveryCaseStatus,
+  RecoveryProposalStatus,
   ScenarioStatus,
 } from "../../generated/prisma/client";
 
@@ -28,6 +31,94 @@ function requiredText(formData: FormData, key: string) {
   }
 
   return value.trim();
+}
+
+
+function generationType(value: unknown) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return null;
+  }
+
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" ? type : null;
+}
+
+function inputFingerprint(value: unknown) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return null;
+  }
+
+  const fingerprint = (
+    value as Record<string, unknown>
+  ).inputFingerprint;
+
+  return typeof fingerprint === "string"
+    ? fingerprint
+    : null;
+}
+
+async function basePlanInputFingerprint(
+  tx: Parameters<
+    Parameters<typeof prisma.$transaction>[0]
+  >[0],
+  planId: string,
+) {
+  const requirements =
+    await tx.teachingRequirement.findMany({
+      where: {
+        planId,
+        active: true,
+      },
+      select: {
+        teachingGroupId: true,
+        totalMinutes: true,
+        distributionMode: true,
+        minWeeklyMinutes: true,
+        preferredWeeklyMinutes: true,
+        maxWeeklyMinutes: true,
+        carryoverAllowed: true,
+        priority: true,
+        weeklyAllocations: {
+          select: {
+            weekStartDate: true,
+            targetMinutes: true,
+            minMinutes: true,
+            maxMinutes: true,
+            availableTeachingDays: true,
+            adjustmentReason: true,
+          },
+          orderBy: {
+            weekStartDate: "asc",
+          },
+        },
+      },
+      orderBy: {
+        teachingGroupId: "asc",
+      },
+    });
+
+  const canonical = requirements.map((requirement) => ({
+    ...requirement,
+    weeklyAllocations: requirement.weeklyAllocations.map(
+      (week) => ({
+        ...week,
+        weekStartDate:
+          week.weekStartDate.toISOString().slice(0, 10),
+      }),
+    ),
+  }));
+
+  return createHash("sha256")
+    .update(JSON.stringify(canonical))
+    .digest("hex");
 }
 
 function optionalText(formData: FormData, key: string) {
@@ -61,21 +152,114 @@ export async function updateScenarioDecision(formData: FormData) {
       where: {
         id: scenarioId,
       },
+      include: {
+        plan: true,
+        recoveryProposals: {
+          include: {
+            recoveryCase: {
+              include: {
+                plan: true,
+              },
+            },
+          },
+        },
+        changes: {
+          select: {
+            explanationCode: true,
+            scenarioSession: {
+              select: {
+                teachingGroupId: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!before) {
       throw new Error("Scenario not found.");
     }
 
-    if (
-      before.status !== ScenarioStatus.GENERATED &&
-      before.status !== ScenarioStatus.ACCEPTED &&
-      before.status !== ScenarioStatus.REJECTED
-    ) {
+    if (before.status !== ScenarioStatus.GENERATED) {
       throw new Error(
-        `Scenario ${before.name} is not ready for a decision.`,
+        `Scenario ${before.name} is already ${before.status} and cannot be decided again.`,
       );
     }
+
+    const recoveryProposal =
+      before.recoveryProposals[0] ?? null;
+
+    if (recoveryProposal) {
+      if (
+        recoveryProposal.status !== RecoveryProposalStatus.CURRENT
+      ) {
+        throw new Error(
+          "This recovery proposal is no longer current.",
+        );
+      }
+
+      if (
+        recoveryProposal.caseVersion !==
+        recoveryProposal.recoveryCase.version
+      ) {
+        throw new Error(
+          "This recovery proposal is stale. Recalculate the Recovery Case before deciding.",
+        );
+      }
+
+      if (
+        recoveryProposal.recoveryCase.basePlanVersion !==
+        recoveryProposal.recoveryCase.plan.version
+      ) {
+        throw new Error(
+          "The Recovery Case baseline has changed. Recalculation is required.",
+        );
+      }
+
+      const newerControlledPlan = await tx.plan.findFirst({
+        where: {
+          tenantId: before.tenantId,
+          planningScopeId:
+            recoveryProposal.recoveryCase.plan.planningScopeId,
+          version: {
+            gt: recoveryProposal.recoveryCase.basePlanVersion,
+          },
+          status: {
+            in: [
+              PlanStatus.APPROVED,
+              PlanStatus.PUBLISHED,
+            ],
+          },
+        },
+        select: {
+          version: true,
+          status: true,
+        },
+        orderBy: {
+          version: "desc",
+        },
+      });
+
+      if (newerControlledPlan) {
+        throw new Error(
+          `This proposal is stale because plan v${newerControlledPlan.version} is ${newerControlledPlan.status}. Recalculate before accepting.`,
+        );
+      }
+    }
+
+    const directChangeCount = before.changes.filter(
+      (change) =>
+        change.explanationCode === "RESOURCE_RECOVERY_DIRECT",
+    ).length;
+    const cascadingChangeCount =
+      before.changes.length - directChangeCount;
+    const affectedTeachingGroupCount = new Set(
+      before.changes.flatMap((change) =>
+        change.scenarioSession?.teachingGroupId
+          ? [change.scenarioSession.teachingGroupId]
+          : [],
+      ),
+    ).size;
 
     const nextStatus =
       decision === "ACCEPT"
@@ -90,6 +274,143 @@ export async function updateScenarioDecision(formData: FormData) {
         status: nextStatus,
       },
     });
+
+    const scenarioType = generationType(
+      before.generationConfig,
+    );
+
+    if (
+      !recoveryProposal &&
+      scenarioType === "BASE_PLAN" &&
+      decision === "ACCEPT"
+    ) {
+      // A Plan may contain several generated alternatives, but only one
+      // Base Plan proposal may represent the controlled revision.
+      await tx.planScenario.updateMany({
+        where: {
+          tenantId: before.tenantId,
+          planId: before.planId,
+          id: {
+            not: before.id,
+          },
+          status: {
+            in: [
+              ScenarioStatus.GENERATED,
+              ScenarioStatus.ACCEPTED,
+            ],
+          },
+          generationConfig: {
+            path: ["type"],
+            equals: "BASE_PLAN",
+          },
+        },
+        data: {
+          status: ScenarioStatus.REJECTED,
+        },
+      });
+
+      await tx.plan.update({
+        where: {
+          id: before.planId,
+        },
+        data: {
+          status: PlanStatus.GENERATED,
+        },
+      });
+    }
+
+    if (recoveryProposal) {
+      if (decision === "ACCEPT") {
+        await tx.recoveryCaseProposal.update({
+          where: {
+            id: recoveryProposal.id,
+          },
+          data: {
+            status: RecoveryProposalStatus.ACCEPTED,
+          },
+        });
+
+        await tx.recoveryCase.update({
+          where: {
+            id: recoveryProposal.recoveryCaseId,
+          },
+          data: {
+            status: RecoveryCaseStatus.ACCEPTED,
+            acceptedScenarioId: before.id,
+            reviewStatus:
+              recoveryProposal.recoveryCase.approvalRequired
+                ? RecoveryCaseReviewStatus.DRAFT
+                : RecoveryCaseReviewStatus.NOT_REQUIRED,
+            submittedForReviewAt: null,
+            approvedAt: null,
+          },
+        });
+      } else {
+        await tx.recoveryCaseProposal.update({
+          where: {
+            id: recoveryProposal.id,
+          },
+          data: {
+            status: RecoveryProposalStatus.REJECTED,
+          },
+        });
+
+        await tx.recoveryCase.update({
+          where: {
+            id: recoveryProposal.recoveryCaseId,
+          },
+          data: {
+            status: RecoveryCaseStatus.OPEN,
+            acceptedScenarioId: null,
+            reviewStatus:
+              recoveryProposal.recoveryCase.approvalRequired
+                ? RecoveryCaseReviewStatus.DRAFT
+                : RecoveryCaseReviewStatus.NOT_REQUIRED,
+            submittedForReviewAt: null,
+            approvedAt: null,
+          },
+        });
+      }
+
+      await writeAuditEvent(tx, {
+        tenantId: before.tenantId,
+        eventType:
+          decision === "ACCEPT" ? "APPROVED" : "REJECTED",
+        entityType: "RecoveryCaseProposal",
+        entityId: recoveryProposal.id,
+        actor: DEMO_ACTOR,
+        description:
+          decision === "ACCEPT"
+            ? `Recovery proposal accepted for case v${recoveryProposal.caseVersion}.`
+            : `Recovery proposal rejected for case v${recoveryProposal.caseVersion}.`,
+        source: "planning.recovery-proposal-decision",
+        correlationId,
+        planId: before.planId,
+        scenarioId: before.id,
+        beforeState: {
+          proposalStatus: recoveryProposal.status,
+          caseStatus:
+            recoveryProposal.recoveryCase.status,
+        },
+        afterState: {
+          proposalStatus:
+            decision === "ACCEPT"
+              ? RecoveryProposalStatus.ACCEPTED
+              : RecoveryProposalStatus.REJECTED,
+          caseStatus:
+            decision === "ACCEPT"
+              ? RecoveryCaseStatus.ACCEPTED
+              : RecoveryCaseStatus.OPEN,
+        },
+        context: {
+          recoveryCaseId:
+            recoveryProposal.recoveryCaseId,
+          caseVersion: recoveryProposal.caseVersion,
+          approvalRequired:
+            recoveryProposal.recoveryCase.approvalRequired,
+        },
+      });
+    }
 
     await writeAuditEvent(tx, {
       tenantId: before.tenantId,
@@ -106,19 +427,35 @@ export async function updateScenarioDecision(formData: FormData) {
       correlationId,
       planId: before.planId,
       scenarioId: before.id,
-      beforeState: before,
+      beforeState: {
+        id: before.id,
+        name: before.name,
+        status: before.status,
+      },
       afterState: after,
       context: {
         decision,
+        changedSessionCount: before.changes.length,
+        directChangeCount,
+        cascadingChangeCount,
+        affectedTeachingGroupCount,
         note:
           "Scenario acceptance records the planning decision only; it does not overwrite the current plan.",
       },
     });
 
-    return after;
+    return {
+      scenario: after,
+      recoveryCaseId:
+        recoveryProposal?.recoveryCaseId ?? null,
+    };
   });
 
-  refreshPlanning(`/planning?scenario=${scenario.id}`);
+  refreshPlanning(
+    scenario.recoveryCaseId
+      ? `/planning?case=${scenario.recoveryCaseId}&scenario=${scenario.scenario.id}#change-approval`
+      : `/planning?scenario=${scenario.scenario.id}`,
+  );
 }
 
 export async function submitPlanForReview(formData: FormData) {
@@ -158,6 +495,53 @@ export async function submitPlanForReview(formData: FormData) {
     ) {
       throw new Error(
         `Plan ${plan.name} cannot be submitted from status ${plan.status}.`,
+      );
+    }
+
+    const acceptedBasePlanScenarios =
+      await tx.planScenario.findMany({
+        where: {
+          tenantId: plan.tenantId,
+          planId: plan.id,
+          status: ScenarioStatus.ACCEPTED,
+          generationConfig: {
+            path: ["type"],
+            equals: "BASE_PLAN",
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          generationConfig: true,
+        },
+      });
+
+    if (acceptedBasePlanScenarios.length !== 1) {
+      throw new Error(
+        `Plan ${plan.name} v${plan.version} requires exactly one ` +
+          `accepted Base Plan proposal before review. ` +
+          `Found ${acceptedBasePlanScenarios.length}.`,
+      );
+    }
+
+    const acceptedScenario =
+      acceptedBasePlanScenarios[0];
+
+    const acceptedFingerprint = inputFingerprint(
+      acceptedScenario.generationConfig,
+    );
+
+    const currentFingerprint =
+      await basePlanInputFingerprint(tx, plan.id);
+
+    if (
+      !acceptedFingerprint ||
+      acceptedFingerprint !== currentFingerprint
+    ) {
+      throw new Error(
+        `The accepted Base Plan proposal is stale because the ` +
+          `teaching requirements or weekly allocations changed after ` +
+          `it was generated. Generate and accept a new proposal first.`,
       );
     }
 

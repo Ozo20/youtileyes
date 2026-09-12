@@ -26,6 +26,7 @@ function weekEnd(weekStart: Date): Date {
 export async function getPlanFeasibility(
   tenantId: string,
   plan: {
+    id: string;
     academicPeriodId: string;
     planningStartDate: Date | null;
     planningEndDate: Date | null;
@@ -49,6 +50,7 @@ export async function getPlanFeasibility(
     prisma.teachingRequirement.findMany({
       where: {
         tenantId,
+        planId: plan.id,
         academicPeriodId: plan.academicPeriodId,
         active: true,
       },

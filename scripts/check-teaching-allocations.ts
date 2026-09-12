@@ -11,9 +11,22 @@ async function main() {
     throw new Error('Demo tenant "DEMO" was not found.');
   }
 
+  const plan = await prisma.plan.findFirst({
+    where: {
+      tenantId: tenant.id,
+      status: { not: "ARCHIVED" },
+    },
+    orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+  });
+
+  if (!plan) {
+    throw new Error("No Plan revision found.");
+  }
+
   const requirements = await prisma.teachingRequirement.findMany({
     where: {
       tenantId: tenant.id,
+      planId: plan.id,
       active: true,
     },
     include: {
@@ -30,8 +43,14 @@ async function main() {
   });
 
   if (requirements.length === 0) {
-    throw new Error("No active teaching requirements found.");
+    throw new Error(
+      `No active teaching requirements found for Plan v${plan.version}.`,
+    );
   }
+
+  console.log(
+    `Checking Base Plan allocations for Plan v${plan.version} (${plan.status}).`,
+  );
 
   for (const requirement of requirements) {
     const allocated = requirement.weeklyAllocations.reduce(

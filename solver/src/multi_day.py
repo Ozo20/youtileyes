@@ -325,11 +325,31 @@ def solve_multi_day_week(
     ]
 
     candidates_by_occurrence: dict[str, list[int]] = defaultdict(list)
-    candidates_by_date: dict[str, list[int]] = defaultdict(list)
+    candidates_by_occurrence_date: dict[tuple[str, str], list[int]] = defaultdict(list)
+    candidates_by_room_date: dict[tuple[str, str], list[int]] = defaultdict(list)
+    candidates_by_instructor_date: dict[tuple[str, str], list[int]] = defaultdict(list)
+
+    occurrence_by_id = {item.id: item for item in occurrences}
+    occurrence_ids_by_group: dict[str, list[str]] = defaultdict(list)
+
+    for occurrence in occurrences:
+        occurrence_ids_by_group[occurrence.teaching_group_id].append(
+            occurrence.id
+        )
 
     for index, candidate in enumerate(candidates):
         candidates_by_occurrence[candidate.occurrence_id].append(index)
-        candidates_by_date[candidate.date].append(index)
+        candidates_by_occurrence_date[
+            (candidate.occurrence_id, candidate.date)
+        ].append(index)
+        candidates_by_room_date[
+            (candidate.room_id, candidate.date)
+        ].append(index)
+
+        for instructor_id in candidate.instructor_ids:
+            candidates_by_instructor_date[
+                (instructor_id, candidate.date)
+            ].append(index)
 
     for occurrence in occurrences:
         indices = candidates_by_occurrence.get(occurrence.id, [])
@@ -340,97 +360,393 @@ def solve_multi_day_week(
             )
         model.add(sum(variables[index] for index in indices) == 1)
 
-    for date_indices in candidates_by_date.values():
-        for left_position, left_index in enumerate(date_indices):
-            left = candidates[left_index]
-            left_group = group_by_id[left.teaching_group_id]
+    # Keep a single copy of every incompatibility constraint. A pair can be
+    # incompatible for several reasons (room, instructor and/or students).
+    incompatible_pairs: set[tuple[int, int]] = set()
 
-            for right_index in date_indices[left_position + 1 :]:
+    def add_incompatible(left_index: int, right_index: int) -> None:
+        if left_index == right_index:
+            return
+
+        left = candidates[left_index]
+        right = candidates[right_index]
+
+        # Alternatives for the same occurrence are already mutually exclusive
+        # through the exactly-one occurrence constraint.
+        if left.occurrence_id == right.occurrence_id:
+            return
+
+        pair = (
+            (left_index, right_index)
+            if left_index < right_index
+            else (right_index, left_index)
+        )
+
+        if pair in incompatible_pairs:
+            return
+
+        incompatible_pairs.add(pair)
+        model.add(
+            variables[pair[0]] + variables[pair[1]] <= 1
+        )
+
+    # ------------------------------------------------------------------
+    # Room conflicts
+    # ------------------------------------------------------------------
+    # Compare only candidates that use the same room on the same date.
+    # Candidates are ordered by start time, so once the next candidate starts
+    # after the current one ends there can be no further overlap.
+    for indices in candidates_by_room_date.values():
+        ordered = sorted(
+            indices,
+            key=lambda index: (
+                candidates[index].start,
+                candidates[index].end,
+            ),
+        )
+
+        for left_position, left_index in enumerate(ordered):
+            left = candidates[left_index]
+
+            for right_index in ordered[left_position + 1 :]:
                 right = candidates[right_index]
-                if left.occurrence_id == right.occurrence_id:
+
+                if right.start >= left.end:
+                    break
+
+                if _overlaps(
+                    left.start,
+                    left.end,
+                    right.start,
+                    right.end,
+                ):
+                    add_incompatible(left_index, right_index)
+
+    # ------------------------------------------------------------------
+    # Instructor conflicts and travel
+    # ------------------------------------------------------------------
+    max_travel_minutes = max(
+        travel_matrix.values(),
+        default=0,
+    )
+
+    for indices in candidates_by_instructor_date.values():
+        ordered = sorted(
+            indices,
+            key=lambda index: (
+                candidates[index].start,
+                candidates[index].end,
+            ),
+        )
+
+        for left_position, left_index in enumerate(ordered):
+            left = candidates[left_index]
+
+            for right_index in ordered[left_position + 1 :]:
+                right = candidates[right_index]
+
+                # Sorted by start time. Beyond the largest possible travel
+                # requirement this candidate and all following candidates are
+                # guaranteed compatible for this instructor.
+                if (
+                    right.start >= left.end
+                    and right.start - left.end >= max_travel_minutes
+                ):
+                    break
+
+                if _overlaps(
+                    left.start,
+                    left.end,
+                    right.start,
+                    right.end,
+                ):
+                    add_incompatible(left_index, right_index)
                     continue
 
-                right_group = group_by_id[right.teaching_group_id]
-                incompatible = False
+                if left.end <= right.start:
+                    if right.start - left.end < _travel_minutes(
+                        left.room_id,
+                        right.room_id,
+                        travel_matrix,
+                    ):
+                        add_incompatible(left_index, right_index)
 
-                if left.room_id == right.room_id and _overlaps(
-                    left.start, left.end, right.start, right.end
+    # ------------------------------------------------------------------
+    # Student conflicts, break and travel
+    # ------------------------------------------------------------------
+    # Student membership is constant for a teaching group, so determine which
+    # group combinations actually share students once instead of checking
+    # student sets for every candidate pair.
+    student_sets = {
+        group.id: frozenset(group.students)
+        for group in groups
+    }
+
+    relevant_group_pairs: list[tuple[str, str]] = []
+
+    group_ids = [
+        group.id
+        for group in groups
+        if occurrence_ids_by_group.get(group.id)
+    ]
+
+    for left_position, left_group_id in enumerate(group_ids):
+        left_students = student_sets[left_group_id]
+
+        # Same teaching group: separate occurrences contain the same students.
+        relevant_group_pairs.append(
+            (left_group_id, left_group_id)
+        )
+
+        for right_group_id in group_ids[left_position + 1 :]:
+            if left_students & student_sets[right_group_id]:
+                relevant_group_pairs.append(
+                    (left_group_id, right_group_id)
+                )
+
+    max_student_break = max(
+        student_profile.min_break_minutes,
+        student_profile.min_break_after_double_minutes,
+    )
+
+    max_student_travel = (
+        max_travel_minutes
+        if student_profile.travel_consumes_break_time
+        else 0
+    )
+
+    student_relevance_window = (
+        max_student_break + max_student_travel
+    )
+
+    def add_student_pair_constraints(
+        left_indices: list[int],
+        right_indices: list[int],
+        *,
+        same_occurrence_set: bool,
+    ) -> None:
+        left_ordered = sorted(
+            left_indices,
+            key=lambda index: (
+                candidates[index].start,
+                candidates[index].end,
+            ),
+        )
+        right_ordered = (
+            left_ordered
+            if same_occurrence_set
+            else sorted(
+                right_indices,
+                key=lambda index: (
+                    candidates[index].start,
+                    candidates[index].end,
+                ),
+            )
+        )
+
+        if same_occurrence_set:
+            pair_source = (
+                (left_index, right_index)
+                for position, left_index in enumerate(left_ordered)
+                for right_index in left_ordered[position + 1 :]
+            )
+        else:
+            pair_source = (
+                (left_index, right_index)
+                for left_index in left_ordered
+                for right_index in right_ordered
+            )
+
+        for left_index, right_index in pair_source:
+            left = candidates[left_index]
+            right = candidates[right_index]
+
+            if left.occurrence_id == right.occurrence_id:
+                continue
+
+            if _overlaps(
+                left.start,
+                left.end,
+                right.start,
+                right.end,
+            ):
+                add_incompatible(left_index, right_index)
+                continue
+
+            if left.end <= right.start:
+                first = left
+                second = right
+            elif right.end <= left.start:
+                first = right
+                second = left
+            else:
+                continue
+
+            # Pairs further apart than every possible break + travel
+            # requirement are always compatible.
+            if (
+                second.start - first.end
+                >= student_relevance_window
+            ):
+                continue
+
+            travel = (
+                _travel_minutes(
+                    first.room_id,
+                    second.room_id,
+                    travel_matrix,
+                )
+                if student_profile.travel_consumes_break_time
+                else 0
+            )
+
+            real_break = (
+                second.start
+                - first.end
+                - travel
+            )
+
+            required_break = student_profile.min_break_minutes
+
+            if first.end - first.start > 45:
+                required_break = max(
+                    required_break,
+                    student_profile.min_break_after_double_minutes,
+                )
+
+            if real_break < required_break:
+                add_incompatible(left_index, right_index)
+
+    all_dates = sorted(
+        {
+            candidate.date
+            for candidate in candidates
+        }
+    )
+
+    for left_group_id, right_group_id in relevant_group_pairs:
+        left_occurrences = occurrence_ids_by_group[left_group_id]
+        right_occurrences = occurrence_ids_by_group[right_group_id]
+
+        for date in all_dates:
+            if left_group_id == right_group_id:
+                for left_position, left_occurrence_id in enumerate(
+                    left_occurrences
                 ):
-                    incompatible = True
+                    left_indices = candidates_by_occurrence_date.get(
+                        (left_occurrence_id, date),
+                        [],
+                    )
 
-                shared_instructors = set(left.instructor_ids) & set(right.instructor_ids)
-                if shared_instructors:
-                    if _overlaps(left.start, left.end, right.start, right.end):
-                        incompatible = True
-                    elif left.end <= right.start:
-                        if right.start - left.end < _travel_minutes(
-                            left.room_id, right.room_id, travel_matrix
-                        ):
-                            incompatible = True
-                    elif right.end <= left.start:
-                        if left.start - right.end < _travel_minutes(
-                            right.room_id, left.room_id, travel_matrix
-                        ):
-                            incompatible = True
+                    if not left_indices:
+                        continue
 
-                shared_students = set(left_group.students) & set(right_group.students)
-                if shared_students:
-                    if _overlaps(left.start, left.end, right.start, right.end):
-                        incompatible = True
-                    else:
-                        if left.end <= right.start:
-                            first, second = left, right
-                        else:
-                            first, second = right, left
-
-                        travel = (
-                            _travel_minutes(first.room_id, second.room_id, travel_matrix)
-                            if student_profile.travel_consumes_break_time
-                            else 0
+                    for right_occurrence_id in left_occurrences[
+                        left_position + 1 :
+                    ]:
+                        right_indices = candidates_by_occurrence_date.get(
+                            (right_occurrence_id, date),
+                            [],
                         )
-                        real_break = second.start - first.end - travel
-                        required_break = student_profile.min_break_minutes
 
-                        if first.end - first.start > 45:
-                            required_break = max(
-                                required_break,
-                                student_profile.min_break_after_double_minutes,
-                            )
+                        if not right_indices:
+                            continue
 
-                        if real_break < required_break:
-                            incompatible = True
-
-                if incompatible:
-                    model.add(variables[left_index] + variables[right_index] <= 1)
-
-    students = {student for group in groups for student in group.students}
-
-    for date_indices in candidates_by_date.values():
-        if student_profile.max_sessions_per_day is not None:
-            for student in students:
-                indices = [
-                    index
-                    for index in date_indices
-                    if student in group_by_id[candidates[index].teaching_group_id].students
-                ]
-                if indices:
-                    model.add(
-                        sum(variables[index] for index in indices)
-                        <= student_profile.max_sessions_per_day
+                        add_student_pair_constraints(
+                            left_indices,
+                            right_indices,
+                            same_occurrence_set=False,
+                        )
+            else:
+                for left_occurrence_id in left_occurrences:
+                    left_indices = candidates_by_occurrence_date.get(
+                        (left_occurrence_id, date),
+                        [],
                     )
 
-        if student_profile.max_teaching_minutes_per_day is not None:
-            for student in students:
-                terms = []
-                for index in date_indices:
-                    candidate = candidates[index]
-                    group = group_by_id[candidate.teaching_group_id]
-                    if student in group.students:
-                        terms.append((candidate.end - candidate.start) * variables[index])
-                if terms:
-                    model.add(
-                        sum(terms) <= student_profile.max_teaching_minutes_per_day
+                    if not left_indices:
+                        continue
+
+                    for right_occurrence_id in right_occurrences:
+                        right_indices = candidates_by_occurrence_date.get(
+                            (right_occurrence_id, date),
+                            [],
+                        )
+
+                        if not right_indices:
+                            continue
+
+                        add_student_pair_constraints(
+                            left_indices,
+                            right_indices,
+                            same_occurrence_set=False,
+                        )
+
+    # ------------------------------------------------------------------
+    # Student daily load
+    # ------------------------------------------------------------------
+    # Build student -> occurrence membership once. This avoids scanning every
+    # candidate on a date once for every student.
+    occurrence_ids_by_student: dict[str, set[str]] = defaultdict(set)
+
+    for occurrence in occurrences:
+        group = group_by_id[occurrence.teaching_group_id]
+        for student_id in group.students:
+            occurrence_ids_by_student[student_id].add(
+                occurrence.id
+            )
+
+    dates_by_occurrence: dict[str, set[str]] = defaultdict(set)
+    for occurrence_id, date in candidates_by_occurrence_date:
+        dates_by_occurrence[occurrence_id].add(date)
+
+    for student_id, student_occurrence_ids in occurrence_ids_by_student.items():
+        relevant_dates = {
+            date
+            for occurrence_id in student_occurrence_ids
+            for date in dates_by_occurrence.get(
+                occurrence_id,
+                set(),
+            )
+        }
+
+        for date in relevant_dates:
+            date_indices = [
+                index
+                for occurrence_id in student_occurrence_ids
+                for index in candidates_by_occurrence_date.get(
+                    (occurrence_id, date),
+                    [],
+                )
+            ]
+
+            if not date_indices:
+                continue
+
+            if student_profile.max_sessions_per_day is not None:
+                model.add(
+                    sum(
+                        variables[index]
+                        for index in date_indices
                     )
+                    <= student_profile.max_sessions_per_day
+                )
+
+            if (
+                student_profile.max_teaching_minutes_per_day
+                is not None
+            ):
+                model.add(
+                    sum(
+                        (
+                            candidates[index].end
+                            - candidates[index].start
+                        )
+                        * variables[index]
+                        for index in date_indices
+                    )
+                    <= student_profile.max_teaching_minutes_per_day
+                )
 
     objective_terms = []
     for index, candidate in enumerate(candidates):

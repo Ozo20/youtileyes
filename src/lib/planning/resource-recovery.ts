@@ -373,3 +373,90 @@ export async function verifyResourceDisruption(
     };
   }
 }
+
+
+export function applyResourceDisruptions(
+  baseInput: SolverInputLike,
+  disruptions: ResourceDisruption[],
+): SolverInputLike {
+  let input = structuredClone(baseInput);
+
+  for (const disruption of disruptions) {
+    input = applyResourceDisruption(input, disruption);
+  }
+
+  input.metadata = {
+    ...(input.metadata ?? {}),
+    resourceRecovery: {
+      disruptions,
+      disruptionCount: disruptions.length,
+    },
+  };
+
+  return input;
+}
+
+function isDirectChangeForAny(
+  before: NormalizedSession | undefined,
+  disruptions: ResourceDisruption[],
+) {
+  return disruptions.some((disruption) =>
+    isDirectChange(before, disruption),
+  );
+}
+
+export function compareRecoveryOutputsForDisruptions(
+  baseline: SolverOutputLike,
+  recovered: SolverOutputLike,
+  disruptions: ResourceDisruption[],
+): ResourceRecoverySessionChange[] {
+  const beforeByOccurrence = sessionMap(baseline);
+  const afterByOccurrence = sessionMap(recovered);
+
+  const occurrenceIds = new Set([
+    ...beforeByOccurrence.keys(),
+    ...afterByOccurrence.keys(),
+  ]);
+
+  const changes: ResourceRecoverySessionChange[] = [];
+
+  for (const occurrenceId of [...occurrenceIds].sort()) {
+    const before = beforeByOccurrence.get(occurrenceId);
+    const after = afterByOccurrence.get(occurrenceId);
+    const fields = changedFields(before, after);
+
+    if (fields.length === 0) continue;
+
+    changes.push({
+      occurrenceId,
+      teachingGroupId:
+        before?.teachingGroupId ?? after?.teachingGroupId ?? null,
+      direct: isDirectChangeForAny(before, disruptions),
+      before: before
+        ? {
+            date: before.date,
+            startMinute: before.startMinute,
+            endMinute: before.endMinute,
+            instructorId: before.instructorId,
+            instructorIds: before.instructorIds,
+            staffingAssignments: before.staffingAssignments,
+            roomId: before.roomId,
+          }
+        : null,
+      after: after
+        ? {
+            date: after.date,
+            startMinute: after.startMinute,
+            endMinute: after.endMinute,
+            instructorId: after.instructorId,
+            instructorIds: after.instructorIds,
+            staffingAssignments: after.staffingAssignments,
+            roomId: after.roomId,
+          }
+        : null,
+      changedFields: fields,
+    });
+  }
+
+  return changes;
+}

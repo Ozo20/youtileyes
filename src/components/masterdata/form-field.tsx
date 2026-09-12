@@ -178,6 +178,8 @@ export function CheckboxField({
 
   defaultChecked = false,
 
+  form,
+
 }: {
 
   name: string;
@@ -185,6 +187,8 @@ export function CheckboxField({
   label: string;
 
   defaultChecked?: boolean;
+
+  form?: string;
 
 }) {
 
@@ -197,6 +201,8 @@ export function CheckboxField({
         type="checkbox"
 
         name={name}
+
+        form={form}
 
         defaultChecked={defaultChecked}
 

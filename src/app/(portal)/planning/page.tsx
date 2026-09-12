@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  Activity,
   CalendarClock,
   CheckCircle2,
   GitCompareArrows,
@@ -10,7 +9,15 @@ import {
 } from "lucide-react";
 
 import { PlanningReviewPanel } from "@/components/planning/planning-review-panel";
+import { RecoveryApprovalPanel } from "@/components/planning/recovery-approval-panel";
+import { RecoveryPublishPanel } from "@/components/planning/recovery-publish-panel";
+import { PublishedRevisionPanel } from "@/components/planning/published-revision-panel";
+import { PlanRevisionTimeline } from "@/components/planning/plan-revision-timeline";
+import { RecoveryWorkflowStepper } from "@/components/planning/recovery-workflow-stepper";
 import { ScenarioComparison } from "@/components/planning/scenario-comparison";
+import { ScenarioReviewPanel } from "@/components/planning/scenario-review-panel";
+import { SolverJobPanel } from "@/components/planning/solver-job-panel";
+import { RecoveryCasePanel } from "@/components/planning/recovery-case-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,12 +33,17 @@ import {
   jsonNumber,
   jsonRecord,
 } from "@/lib/planning/workspace-data";
-import { updateScenarioDecision } from "@/lib/planning/workspace-actions";
+import { generateBasePlanScenario } from "@/lib/planning/base-plan-solver-actions";
 import { prisma } from "@/lib/prisma";
+import { getPlanRevisionHistory } from "@/lib/planning/revision-history";
 
 type PageProps = {
   searchParams: Promise<{
     scenario?: string;
+    job?: string;
+    review?: string;
+    case?: string;
+    published?: string;
   }>;
 };
 
@@ -85,6 +97,39 @@ function generationType(value: unknown) {
   const type = record?.type;
 
   return typeof type === "string" ? type : null;
+}
+
+function recoveryDisruption(value: unknown) {
+  const config = jsonRecord(value);
+  const disruption = jsonRecord(config?.disruption);
+
+  const text = (key: string) => {
+    const candidate = disruption?.[key];
+    return typeof candidate === "string" ? candidate : null;
+  };
+
+  return {
+    type: text("type"),
+    resourceId: text("resourceId"),
+    startDate: text("startDate"),
+    endDate: text("endDate") ?? text("startDate"),
+  };
+}
+
+function humanRecoveryDate(startDate: string | null, endDate: string | null) {
+  if (!startDate) return null;
+
+  const start = dateFormatter.format(
+    new Date(`${startDate.slice(0, 10)}T00:00:00.000Z`),
+  );
+
+  if (!endDate || endDate === startDate) return start;
+
+  const end = dateFormatter.format(
+    new Date(`${endDate.slice(0, 10)}T00:00:00.000Z`),
+  );
+
+  return `${start} – ${end}`;
 }
 
 export default async function PlanningPage({
@@ -164,7 +209,44 @@ export default async function PlanningPage({
     );
   }
 
-  const [scenarios, feasibility] = await Promise.all([
+  const publishedPlan =
+    params.published
+      ? await prisma.plan.findFirst({
+          where: {
+            id: params.published,
+            tenantId: tenant.id,
+            status: "PUBLISHED",
+          },
+          select: {
+            id: true,
+            name: true,
+            version: true,
+            status: true,
+            effectiveFrom: true,
+            publishedAt: true,
+            _count: {
+              select: {
+                sessions: true,
+              },
+            },
+          },
+        })
+      : null;
+
+  const revisionHistory = await getPlanRevisionHistory({
+    tenantId: tenant.id,
+    planningScopeId: plan.planningScopeId,
+  });
+
+  const [
+    scenarios,
+    feasibility,
+    instructors,
+    rooms,
+    recentJobs,
+    recoveryCases,
+    teachingGroups,
+  ] = await Promise.all([
     prisma.planScenario.findMany({
       where: {
         tenantId: tenant.id,
@@ -198,10 +280,161 @@ export default async function PlanningPage({
       },
     }),
     getPlanFeasibility(tenant.id, plan),
+    prisma.instructor.findMany({
+      where: {
+        tenantId: tenant.id,
+        status: "ACTIVE",
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+      },
+      orderBy: [
+        { lastName: "asc" },
+        { firstName: "asc" },
+      ],
+    }),
+    prisma.room.findMany({
+      where: {
+        tenantId: tenant.id,
+        active: true,
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+      },
+      orderBy: {
+        code: "asc",
+      },
+    }),
+    prisma.solverJob.findMany({
+      where: {
+        tenantId: tenant.id,
+        planScenario: {
+          planId: plan.id,
+        },
+      },
+      include: {
+        planScenario: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        runs: {
+          select: {
+            id: true,
+            status: true,
+            objectiveValue: true,
+          },
+          orderBy: {
+            startedAt: "desc",
+          },
+          take: 1,
+        },
+      },
+      orderBy: {
+        queuedAt: "desc",
+      },
+      take: 8,
+    }),
+    prisma.recoveryCase.findMany({
+      where: {
+        tenantId: tenant.id,
+        planId: plan.id,
+        status: {
+          in: ["OPEN", "GENERATING", "READY", "ACCEPTED"],
+        },
+      },
+      include: {
+        disruptions: {
+          where: { active: true },
+          orderBy: { createdAt: "asc" },
+        },
+        proposals: {
+          include: {
+            scenario: {
+              select: {
+                id: true,
+                name: true,
+                status: true,
+              },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+        },
+        reviewSteps: {
+          include: {
+            decisions: {
+              orderBy: { decidedAt: "desc" },
+            },
+          },
+          orderBy: [
+            { caseVersion: "desc" },
+            { stage: "asc" },
+            { position: "asc" },
+          ],
+        },
+        plan: {
+          select: {
+            id: true,
+            version: true,
+            planningScopeId: true,
+          },
+        },
+        solverJobs: {
+          select: {
+            id: true,
+            status: true,
+            failureMessage: true,
+            queuedAt: true,
+            completedAt: true,
+            config: true,
+            runs: {
+              select: {
+                diagnostics: true,
+              },
+              orderBy: {
+                startedAt: "desc",
+              },
+              take: 1,
+            },
+          },
+          orderBy: {
+            queuedAt: "desc",
+          },
+          take: 5,
+        },
+      },
+      orderBy: { updatedAt: "desc" },
+    }),
+    prisma.teachingGroup.findMany({
+      where: {
+        tenantId: tenant.id,
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+      },
+    }),
   ]);
+
+  const currentRecoveryCaseScenarioId =
+    recoveryCases
+      .flatMap((recoveryCase) => recoveryCase.proposals)
+      .find(
+        (proposal) =>
+          proposal.status === "CURRENT" ||
+          proposal.status === "ACCEPTED",
+      )
+      ?.scenario.id;
 
   const selectedScenarioId =
     params.scenario ??
+    currentRecoveryCaseScenarioId ??
     scenarios.find(
       (scenario) =>
         generationType(scenario.generationConfig) ===
@@ -295,7 +528,183 @@ export default async function PlanningPage({
     0;
 
   const canDecideScenario =
-  selectedScenario?.status === "GENERATED";
+    selectedScenario?.status === "GENERATED";
+
+  const planStartDate = plan.planningStartDate
+    ? plan.planningStartDate.toISOString().slice(0, 10)
+    : "";
+  const planEndDate = plan.planningEndDate
+    ? plan.planningEndDate.toISOString().slice(0, 10)
+    : "";
+
+  const baseScenarios = scenarios
+    .filter(
+      (scenario) =>
+        generationType(scenario.generationConfig) !==
+        "RESOURCE_RECOVERY",
+    )
+    .map((scenario) => ({
+      id: scenario.id,
+      name: scenario.name,
+      status: scenario.status,
+    }));
+
+  const instructorNames = Object.fromEntries(
+    instructors.map((instructor) => [
+      instructor.id,
+      `${instructor.firstName} ${instructor.lastName}`,
+    ]),
+  );
+  const roomNames = Object.fromEntries(
+    rooms.map((room) => [
+      room.id,
+      room.code ? `${room.code} · ${room.name}` : room.name,
+    ]),
+  );
+
+  const disruption = selectedScenario
+    ? recoveryDisruption(selectedScenario.generationConfig)
+    : null;
+  const disruptionLabel =
+    disruption?.type === "INSTRUCTOR_UNAVAILABLE"
+      ? disruption.resourceId
+        ? instructorNames[disruption.resourceId] ?? "Instructor"
+        : "Instructor"
+      : disruption?.type === "ROOM_UNAVAILABLE"
+        ? disruption.resourceId
+          ? roomNames[disruption.resourceId] ?? "Room"
+          : "Room"
+        : null;
+  const scenarioHeading =
+    disruption?.type === "INSTRUCTOR_UNAVAILABLE"
+      ? `${disruptionLabel} unavailable`
+      : disruption?.type === "ROOM_UNAVAILABLE"
+        ? `Room ${disruptionLabel} unavailable`
+        : selectedScenario?.name ?? "";
+  const scenarioPeriod = disruption
+    ? humanRecoveryDate(disruption.startDate, disruption.endDate)
+    : null;
+  const reviewingScenario =
+    params.review === "1" &&
+    selectedScenario?.status === "GENERATED";
+
+  const selectedRecoveryCase =
+    (params.case
+      ? recoveryCases.find((item) => item.id === params.case)
+      : null) ??
+    recoveryCases.find((item) =>
+      ["OPEN", "GENERATING", "READY"].includes(item.status),
+    ) ??
+    null;
+
+  const recoveryProposal =
+    selectedRecoveryCase?.proposals.find(
+      (proposal) =>
+        proposal.status === "CURRENT" ||
+        proposal.status === "ACCEPTED",
+    ) ?? null;
+
+  const proposalAccepted =
+    recoveryProposal?.status === "ACCEPTED" &&
+    selectedRecoveryCase?.acceptedScenarioId ===
+      recoveryProposal.scenario.id;
+
+  const newerControlledPlan = selectedRecoveryCase
+    ? await prisma.plan.findFirst({
+        where: {
+          tenantId: selectedRecoveryCase.tenantId,
+          planningScopeId:
+            selectedRecoveryCase.plan.planningScopeId,
+          version: {
+            gt: selectedRecoveryCase.basePlanVersion,
+          },
+          status: {
+            in: ["APPROVED", "PUBLISHED"],
+          },
+        },
+        select: {
+          id: true,
+          version: true,
+          status: true,
+        },
+        orderBy: {
+          version: "desc",
+        },
+      })
+    : null;
+
+  const baselineFresh =
+    !selectedRecoveryCase ||
+    (
+      selectedRecoveryCase.basePlanVersion ===
+        selectedRecoveryCase.plan.version &&
+      !newerControlledPlan
+    );
+
+  const approvalComplete =
+    Boolean(selectedRecoveryCase) &&
+    (
+      !selectedRecoveryCase!.approvalRequired ||
+      selectedRecoveryCase!.reviewStatus === "APPROVED" ||
+      selectedRecoveryCase!.reviewStatus === "NOT_REQUIRED"
+    );
+
+  const addUtcDays = (value: Date, days: number) => {
+    const result = new Date(value);
+    result.setUTCDate(result.getUTCDate() + days);
+    return result;
+  };
+
+  const minimumPublishDate =
+    plan.frozenThroughDate
+      ? addUtcDays(plan.frozenThroughDate, 1)
+      : plan.planningStartDate;
+
+  const defaultPublishDate =
+    minimumPublishDate ?? plan.planningStartDate;
+
+  const initialScenario =
+    scenarios.find(
+      (scenario) =>
+        generationType(scenario.generationConfig) !==
+        "RESOURCE_RECOVERY" &&
+        generationType(scenario.generationConfig) !==
+        "RECOVERY_CASE",
+    ) ?? scenarios[scenarios.length - 1] ?? null;
+
+  const teachingGroupNames = Object.fromEntries(
+    teachingGroups.map((group) => [
+      group.id,
+      group.code
+        ? `${group.code} · ${group.name}`
+        : group.name,
+    ]),
+  );
+
+  if (selectedRecoveryCase) {
+    for (const job of selectedRecoveryCase.solverJobs) {
+      const run = job.runs[0];
+      const diagnostics =
+        run?.diagnostics &&
+        typeof run.diagnostics === "object" &&
+        !Array.isArray(run.diagnostics)
+          ? (run.diagnostics as Record<string, unknown>)
+          : null;
+      const teachingGroupId =
+        typeof diagnostics?.teachingGroupId === "string"
+          ? diagnostics.teachingGroupId
+          : null;
+
+      if (
+        diagnostics &&
+        teachingGroupId &&
+        teachingGroupNames[teachingGroupId]
+      ) {
+        diagnostics.teachingGroupLabel =
+          teachingGroupNames[teachingGroupId];
+      }
+    }
+  }
 
   return (
     <div className="page-container">
@@ -421,7 +830,34 @@ export default async function PlanningPage({
                 </span>
               </div>
             </div>
-          </CardContent>
+
+            {["DRAFT", "GENERATED", "REVIEWED"].includes(
+              plan.status,
+            ) ? (
+              <div className="planning-scenario-actions">
+                <div>
+                  <CalendarClock size={16} />
+                  <span>
+                    Calculate a new timetable proposal from the
+                    requirements and weekly allocations in Base Plan
+                    v{plan.version}.
+                  </span>
+                </div>
+
+                <form action={generateBasePlanScenario}>
+                  <input
+                    type="hidden"
+                    name="planId"
+                    value={plan.id}
+                  />
+                  <Button type="submit" variant="primary">
+                    Generate Base Plan proposal
+                  </Button>
+                </form>
+              </div>
+            ) : null}
+
+</CardContent>
         </Card>
 
         <Card>
@@ -507,7 +943,79 @@ export default async function PlanningPage({
         </Card>
       </div>
 
-      <div className="planning-scenario-workspace">
+      <div className="planning-revision-summary">
+        <PlanRevisionTimeline revisions={revisionHistory} compact />
+      </div>
+
+      {publishedPlan ? (
+        <PublishedRevisionPanel
+          plan={{
+            id: publishedPlan.id,
+            name: publishedPlan.name,
+            version: publishedPlan.version,
+            status: publishedPlan.status,
+            effectiveFrom:
+              publishedPlan.effectiveFrom,
+            publishedAt:
+              publishedPlan.publishedAt,
+            sessionCount:
+              publishedPlan._count.sessions,
+          }}
+        />
+      ) : null}
+
+      <RecoveryWorkflowStepper
+        hasCase={Boolean(selectedRecoveryCase)}
+        disruptionCount={
+          selectedRecoveryCase?.disruptions.length ?? 0
+        }
+        hasProposal={Boolean(recoveryProposal)}
+        proposalAccepted={proposalAccepted}
+        approvalRequired={
+          selectedRecoveryCase?.approvalRequired ??
+          tenant.recoveryApprovalRequired
+        }
+        approvalComplete={approvalComplete}
+        baselineFresh={baselineFresh}
+      />
+
+      {planStartDate && planEndDate && initialScenario ? (
+        <div className="planning-solver-section">
+          <RecoveryCasePanel
+            planId={plan.id}
+            baseScenarioId={initialScenario.id}
+            planStartDate={planStartDate}
+            planEndDate={planEndDate}
+            recoveryCase={selectedRecoveryCase}
+            instructors={instructors.map((item) => ({
+              id: item.id,
+              label: `${item.firstName} ${item.lastName}`,
+            }))}
+            rooms={rooms.map((item) => ({
+              id: item.id,
+              label: item.code ? `${item.code} · ${item.name}` : item.name,
+            }))}
+          />
+        </div>
+      ) : null}
+
+      {planStartDate && planEndDate ? (
+        <details className="planning-legacy-jobs">
+          <summary>Recent individual solver jobs</summary>
+          <div className="planning-solver-section">
+          <SolverJobPanel
+            planStartDate={planStartDate}
+            planEndDate={planEndDate}
+            baseScenarios={baseScenarios}
+            instructors={instructors}
+            rooms={rooms}
+            jobs={recentJobs}
+          />
+          </div>
+        </details>
+      ) : null}
+
+      <div id="change-review" className="planning-scenario-workspace planning-anchor-section">
         <Card className="planning-scenario-list-card">
           <CardHeader>
             <div>
@@ -583,7 +1091,12 @@ export default async function PlanningPage({
                     <span className="eyebrow">
                       Scenario detail
                     </span>
-                    <h2>{selectedScenario.name}</h2>
+                    <h2>{scenarioHeading}</h2>
+                    {scenarioPeriod ? (
+                      <p className="planning-scenario-period">
+                        {scenarioPeriod}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="planning-header-actions">
@@ -653,59 +1166,59 @@ export default async function PlanningPage({
                   {canDecideScenario ? (
                     <div className="planning-scenario-actions">
                       <div>
-                        <Activity size={16} />
+                        <ShieldCheck size={16} />
                         <span>
-                          Accepting a scenario records the decision
-                          only. The current plan is not overwritten.
+                          Review the affected sessions and impact before
+                          deciding whether this recovery proposal should
+                          continue.
                         </span>
                       </div>
 
                       <div>
-                        <form action={updateScenarioDecision}>
-                          <input
-                            type="hidden"
-                            name="scenarioId"
-                            value={selectedScenario.id}
-                          />
-                          <input
-                            type="hidden"
-                            name="decision"
-                            value="ACCEPT"
-                          />
-                          <Button
-                            type="submit"
-                            variant="primary"
-                          >
-                            Accept proposal
+                        <Link
+                          href={`/planning?scenario=${selectedScenario.id}&review=1#scenario-review`}
+                        >
+                          <Button type="button" variant="primary">
+                            Review proposal
                           </Button>
-                        </form>
-
-                        <form action={updateScenarioDecision}>
-                          <input
-                            type="hidden"
-                            name="scenarioId"
-                            value={selectedScenario.id}
-                          />
-                          <input
-                            type="hidden"
-                            name="decision"
-                            value="REJECT"
-                          />
-                          <Button
-                            type="submit"
-                            variant="secondary"
-                          >
-                            Reject proposal
-                          </Button>
-                        </form>
+                        </Link>
                       </div>
                     </div>
                   ) : null}
                 </CardContent>
               </Card>
 
+              {reviewingScenario ? (
+                <div id="scenario-review">
+                  <ScenarioReviewPanel
+                    scenario={{
+                      id: selectedScenario.id,
+                      name: selectedScenario.name,
+                      status: selectedScenario.status,
+                      generationConfig:
+                        selectedScenario.generationConfig,
+                      sessionCount:
+                        selectedScenario.sessions.length,
+                      changes: selectedScenario.changes,
+                    }}
+                    solverStatus={
+                      latestRun?.status ??
+                      (jsonRecord(
+                        selectedScenario.objectiveSummary,
+                      )?.solverStatus as string | undefined) ??
+                      "UNKNOWN"
+                    }
+                    blockingViolations={blockingViolations}
+                    instructorNames={instructorNames}
+                    roomNames={roomNames}
+                  />
+                </div>
+              ) : null}
+
               <ScenarioComparison
                 changes={selectedScenario.changes}
+                instructorNames={instructorNames}
+                roomNames={roomNames}
               />
             </>
           ) : (
@@ -720,11 +1233,56 @@ export default async function PlanningPage({
         </div>
       </div>
 
-      <PlanningReviewPanel
-        planId={plan.id}
-        planStatus={plan.status}
-        workflow={workflow}
+      <RecoveryApprovalPanel
+        tenantId={tenant.id}
+        tenantApprovalRequired={
+          tenant.recoveryApprovalRequired
+        }
+        recoveryCase={selectedRecoveryCase}
+        baselineFresh={baselineFresh}
       />
+
+      {!publishedPlan ? (
+        <RecoveryPublishPanel
+          recoveryCaseId={
+            selectedRecoveryCase?.id ?? null
+          }
+          proposalAccepted={proposalAccepted}
+          baselineFresh={baselineFresh}
+          approvalSatisfied={approvalComplete}
+          currentPlanVersion={plan.version}
+          minimumEffectiveFrom={
+            minimumPublishDate
+              ? minimumPublishDate
+                  .toISOString()
+                  .slice(0, 10)
+              : null
+          }
+          defaultEffectiveFrom={
+            defaultPublishDate
+              ? defaultPublishDate
+                  .toISOString()
+                  .slice(0, 10)
+              : null
+          }
+          maximumEffectiveFrom={
+            plan.planningEndDate
+              ? plan.planningEndDate
+                  .toISOString()
+                  .slice(0, 10)
+              : null
+          }
+        />
+      ) : null}
+
+      <details className="planning-current-plan-review">
+        <summary>Current plan approval history</summary>
+        <PlanningReviewPanel
+          planId={plan.id}
+          planStatus={plan.status}
+          workflow={workflow}
+        />
+      </details>
     </div>
   );
 }

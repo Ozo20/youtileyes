@@ -175,6 +175,27 @@ async function main() {
     throw new Error('Academic period "2026-AUTUMN" was not found.');
   }
 
+  const plan = await prisma.plan.findFirst({
+    where: {
+      tenantId: tenant.id,
+      academicPeriodId: period.id,
+      status: { not: "ARCHIVED" },
+    },
+    orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+  });
+
+  if (!plan) {
+    throw new Error(
+      `No Plan revision found for academic period "${period.code}".`,
+    );
+  }
+
+  if (!["DRAFT", "GENERATED", "REVIEWED"].includes(plan.status)) {
+    throw new Error(
+      `Plan v${plan.version} is ${plan.status}. Weekly Base Plan allocations may only be regenerated on an editable revision.`,
+    );
+  }
+
   const calendarDays = await prisma.calendarDay.findMany({
     where: {
       tenantId: tenant.id,
@@ -204,6 +225,7 @@ async function main() {
   const requirements = await prisma.teachingRequirement.findMany({
     where: {
       tenantId: tenant.id,
+      planId: plan.id,
       academicPeriodId: period.id,
       active: true,
     },
@@ -313,7 +335,9 @@ async function main() {
     );
   }
 
-  console.log("Teaching requirement allocations generated.");
+  console.log(
+    `Teaching requirement allocations generated for Plan v${plan.version}.`,
+  );
 }
 
 main()

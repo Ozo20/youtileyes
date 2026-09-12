@@ -9,9 +9,7 @@ import {
   CardContent,
   CardHeader,
 } from "@/components/ui/card";
-import {
-  jsonRecord,
-} from "@/lib/planning/workspace-data";
+import { jsonRecord } from "@/lib/planning/workspace-data";
 
 type Change = {
   id: string;
@@ -25,6 +23,7 @@ type Change = {
     startMinute: number;
     endMinute: number;
     teachingGroup: {
+      id: string;
       code: string | null;
       name: string;
     };
@@ -35,6 +34,7 @@ type Change = {
     instructors: Array<{
       role: string;
       instructor: {
+        id: string;
         firstName: string;
         lastName: string;
       };
@@ -42,65 +42,184 @@ type Change = {
   } | null;
 };
 
-function value(
-  state: unknown,
+type SessionState = {
+  date: string | null;
+  startMinute: number | null;
+  endMinute: number | null;
+  roomId: string | null;
+  instructorId: string | null;
+  instructorIds: string[];
+  staffingAssignments: Array<{
+    role: string;
+    instructorId: string;
+  }>;
+};
+
+const dateFormatter = new Intl.DateTimeFormat("en-GB", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+function readString(
+  record: Record<string, unknown> | null,
   key: string,
-): string {
-  const candidate = jsonRecord(state)?.[key];
-
-  if (candidate === null || candidate === undefined) return "—";
-  if (Array.isArray(candidate)) return candidate.join(", ");
-  if (typeof candidate === "object") return "Changed";
-
-  return String(candidate);
+) {
+  const value = record?.[key];
+  return typeof value === "string" ? value : null;
 }
 
-function minuteLabel(value: string) {
-  const minute = Number(value);
+function readNumber(
+  record: Record<string, unknown> | null,
+  key: string,
+) {
+  const value = record?.[key];
+  return typeof value === "number" ? value : null;
+}
 
-  if (!Number.isFinite(minute)) return value;
+function sessionState(value: unknown): SessionState {
+  const record = jsonRecord(value);
+  const rawInstructorIds = record?.instructorIds;
+  const rawStaffing = record?.staffingAssignments;
 
-  const hours = Math.floor(minute / 60)
+  const instructorIds = Array.isArray(rawInstructorIds)
+    ? rawInstructorIds.filter(
+        (item): item is string => typeof item === "string",
+      )
+    : [];
+
+  const staffingAssignments = Array.isArray(rawStaffing)
+    ? rawStaffing.flatMap((item) => {
+        const assignment = jsonRecord(item);
+        const role = readString(assignment, "role");
+        const instructorId =
+          readString(assignment, "instructorId") ??
+          readString(assignment, "instructor_id");
+
+        return role && instructorId
+          ? [{ role, instructorId }]
+          : [];
+      })
+    : [];
+
+  const instructorId = readString(record, "instructorId");
+
+  return {
+    date: readString(record, "date"),
+    startMinute: readNumber(record, "startMinute"),
+    endMinute: readNumber(record, "endMinute"),
+    roomId: readString(record, "roomId"),
+    instructorId,
+    instructorIds:
+      instructorIds.length > 0
+        ? instructorIds
+        : instructorId
+          ? [instructorId]
+          : [],
+    staffingAssignments,
+  };
+}
+
+function minuteLabel(value: number | null) {
+  if (value === null) return "—";
+
+  const hours = Math.floor(value / 60)
     .toString()
     .padStart(2, "0");
-  const minutes = (minute % 60)
+  const minutes = (value % 60)
     .toString()
     .padStart(2, "0");
 
   return `${hours}:${minutes}`;
 }
 
-function compareLabel(
-  before: unknown,
-  after: unknown,
-  key: string,
-  format: (value: string) => string = (item) => item,
+function dateLabel(value: string | null) {
+  if (!value) return "—";
+  return dateFormatter.format(
+    new Date(`${value.slice(0, 10)}T00:00:00.000Z`),
+  );
+}
+
+function timeLabel(state: SessionState) {
+  return `${minuteLabel(state.startMinute)}–${minuteLabel(state.endMinute)}`;
+}
+
+function roomLabel(
+  roomId: string | null,
+  roomNames: Record<string, string>,
 ) {
-  const beforeValue = format(value(before, key));
-  const afterValue = format(value(after, key));
+  if (!roomId) return "No room";
+  return roomNames[roomId] ?? "Unknown room";
+}
 
-  if (beforeValue === afterValue) return null;
+function instructorLabel(
+  state: SessionState,
+  instructorNames: Record<string, string>,
+) {
+  if (state.staffingAssignments.length > 0) {
+    return state.staffingAssignments
+      .map(
+        (assignment) =>
+          `${assignment.role}: ${
+            instructorNames[assignment.instructorId] ??
+            "Unknown instructor"
+          }`,
+      )
+      .join(" · ");
+  }
 
+  if (state.instructorIds.length === 0) {
+    return "No instructor";
+  }
+
+  return state.instructorIds
+    .map((id) => instructorNames[id] ?? "Unknown instructor")
+    .join(" · ");
+}
+
+function sameArray(left: string[], right: string[]) {
   return (
-    <span className="planning-change-value">
-      <span>{beforeValue}</span>
-      <ArrowRight size={12} />
-      <strong>{afterValue}</strong>
-    </span>
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function DiffRow({
+  label,
+  before,
+  after,
+}: {
+  label: string;
+  before: string;
+  after: string;
+}) {
+  return (
+    <div className="planning-change-diff-row">
+      <span className="planning-change-diff-label">{label}</span>
+      <span className="planning-change-before">{before}</span>
+      <ArrowRight size={13} />
+      <strong className="planning-change-after">{after}</strong>
+    </div>
   );
 }
 
 export function ScenarioComparison({
   changes,
+  instructorNames,
+  roomNames,
 }: {
   changes: Change[];
+  instructorNames: Record<string, string>;
+  roomNames: Record<string, string>;
 }) {
   return (
     <Card>
       <CardHeader>
         <div>
-          <span className="eyebrow">Comparison</span>
-          <h2>Baseline → scenario</h2>
+          <span className="eyebrow">What changes</span>
+          <h2>Current arrangement → proposed arrangement</h2>
         </div>
 
         <GitCompareArrows size={18} />
@@ -109,30 +228,45 @@ export function ScenarioComparison({
       <CardContent className="planning-change-list">
         {changes.length === 0 ? (
           <p className="planning-muted">
-            No recorded changes for this scenario.
+            This proposal has no recorded session changes.
           </p>
         ) : (
           changes.map((change) => {
             const direct =
               change.explanationCode ===
               "RESOURCE_RECOVERY_DIRECT";
+            const before = sessionState(change.beforeState);
+            const after = sessionState(change.afterState);
+
+            const dateChanged = before.date !== after.date;
+            const timeChanged =
+              before.startMinute !== after.startMinute ||
+              before.endMinute !== after.endMinute;
+            const roomChanged = before.roomId !== after.roomId;
+            const instructorsChanged =
+              !sameArray(before.instructorIds, after.instructorIds) ||
+              JSON.stringify(before.staffingAssignments) !==
+                JSON.stringify(after.staffingAssignments);
 
             return (
               <div
                 key={change.id}
-                className="planning-change-row"
+                className="planning-change-row planning-change-row-rich"
               >
                 <div className="planning-change-main">
                   <div className="planning-change-heading">
-                    <strong>
-                      {change.scenarioSession?.teachingGroup.code ??
-                        change.scenarioSession?.teachingGroup.name ??
-                        "Session"}
-                    </strong>
+                    <div className="planning-change-title">
+                      <strong>
+                        {change.scenarioSession?.teachingGroup.code ??
+                          "Session"}
+                      </strong>
+                      <span>
+                        {change.scenarioSession?.teachingGroup.name ??
+                          "Teaching session"}
+                      </span>
+                    </div>
 
-                    <Badge
-                      tone={direct ? "warning" : "info"}
-                    >
+                    <Badge tone={direct ? "warning" : "info"}>
                       {direct ? "Direct" : "Cascading"}
                     </Badge>
 
@@ -141,40 +275,57 @@ export function ScenarioComparison({
                     </Badge>
                   </div>
 
-                  <p>
-                    {change.explanation ??
-                      "Scenario change recorded by the solver."}
+                  <p className="planning-change-explanation">
+                    {direct
+                      ? "This session used the unavailable resource and had to be changed."
+                      : "This session was adjusted to keep the overall timetable feasible after the direct changes."}
                   </p>
 
-                  <div className="planning-change-values">
-                    {compareLabel(
-                      change.beforeState,
-                      change.afterState,
-                      "date",
-                    )}
-                    {compareLabel(
-                      change.beforeState,
-                      change.afterState,
-                      "startMinute",
-                      minuteLabel,
-                    )}
-                    {compareLabel(
-                      change.beforeState,
-                      change.afterState,
-                      "endMinute",
-                      minuteLabel,
-                    )}
-                    {compareLabel(
-                      change.beforeState,
-                      change.afterState,
-                      "roomId",
-                    )}
-                    {compareLabel(
-                      change.beforeState,
-                      change.afterState,
-                      "instructorId",
-                    )}
+                  <div className="planning-change-diff">
+                    {dateChanged ? (
+                      <DiffRow
+                        label="Date"
+                        before={dateLabel(before.date)}
+                        after={dateLabel(after.date)}
+                      />
+                    ) : null}
+
+                    {timeChanged ? (
+                      <DiffRow
+                        label="Time"
+                        before={timeLabel(before)}
+                        after={timeLabel(after)}
+                      />
+                    ) : null}
+
+                    {roomChanged ? (
+                      <DiffRow
+                        label="Room"
+                        before={roomLabel(before.roomId, roomNames)}
+                        after={roomLabel(after.roomId, roomNames)}
+                      />
+                    ) : null}
+
+                    {instructorsChanged ? (
+                      <DiffRow
+                        label="Instructor"
+                        before={instructorLabel(
+                          before,
+                          instructorNames,
+                        )}
+                        after={instructorLabel(
+                          after,
+                          instructorNames,
+                        )}
+                      />
+                    ) : null}
                   </div>
+
+                  {change.explanation ? (
+                    <small className="planning-change-technical-reason">
+                      Reason: {change.explanation}
+                    </small>
+                  ) : null}
                 </div>
               </div>
             );
