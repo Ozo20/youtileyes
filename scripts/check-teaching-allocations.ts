@@ -64,8 +64,8 @@ async function main() {
       );
     }
 
-    const adjusted = requirement.weeklyAllocations.filter(
-      (week) => Boolean(week.adjustmentReason),
+    const adjusted = requirement.weeklyAllocations.filter((week) =>
+      Boolean(week.adjustmentReason),
     );
 
     console.log(
@@ -95,12 +95,20 @@ async function main() {
     throw new Error("ST2A cohort was not found.");
   }
 
-  if (cohort.members.length !== 5) {
-    throw new Error(`ST2A expected 5 members, found ${cohort.members.length}.`);
+  if (cohort.members.length !== 20) {
+    throw new Error(
+      `ST2A expected 20 members, found ${cohort.members.length}.`,
+    );
   }
 
-  if (cohort.teachingGroups.some((group) => group.membershipMode !== "FULL_COHORT")) {
-    throw new Error("Every ST2A demo teaching group should use FULL_COHORT membership.");
+  if (
+    cohort.teachingGroups.some(
+      (group) => group.membershipMode !== "FULL_COHORT",
+    )
+  ) {
+    throw new Error(
+      "Every ST2A demo teaching group should use FULL_COHORT membership.",
+    );
   }
 
   if (cohort.planningExceptions.length === 0) {

@@ -921,17 +921,22 @@ def solve_multi_day_week(
             ):
                 continue
 
-            applicable_rules = [
-                rule
-                for rule in student_break_rules
-                if break_rule_applies(
+            # Cohort-scoped rules may be compiled into one group-scoped row
+            # per teaching group while retaining the same ruleId. A pair of
+            # groups must still incur the originating preference only once.
+            applicable_rule_by_id: dict[str, dict] = {}
+            for rule in student_break_rules:
+                if not break_rule_applies(
                     rule,
                     date=date,
                     left_group=left_group,
                     right_group=right_group,
                     shared_students=shared_students,
-                )
-            ]
+                ):
+                    continue
+                applicable_rule_by_id.setdefault(str(rule["ruleId"]), rule)
+
+            applicable_rules = list(applicable_rule_by_id.values())
 
             if not applicable_rules:
                 continue
@@ -960,6 +965,68 @@ def solve_multi_day_week(
                 right_hard_break = max(
                     right_hard_break,
                     student_profile.min_break_after_double_minutes,
+                )
+
+            # Create only two soft deficit variables per
+            # occurrence-pair/date/rule. Room combinations condition the
+            # constraints, but do not need their own copies of the variables.
+            soft_rule_vars: list[
+                tuple[int, dict, int, int, cp_model.IntVar, cp_model.IntVar]
+            ] = []
+
+            for rule_index, rule in enumerate(applicable_rules):
+                if rule["hard"]:
+                    continue
+
+                required = int(rule["minBreakMinutes"])
+                weight = int(rule["weight"])
+
+                if required <= 0 or weight <= 0:
+                    continue
+
+                deficit_lr = model.new_int_var(
+                    0,
+                    required,
+                    f"break_pref_lr_{left_id}_{right_id}_{date}_{rule_index}",
+                )
+                deficit_rl = model.new_int_var(
+                    0,
+                    required,
+                    f"break_pref_rl_{left_id}_{right_id}_{date}_{rule_index}",
+                )
+
+                soft_rule_vars.append(
+                    (
+                        rule_index,
+                        rule,
+                        required,
+                        weight,
+                        deficit_lr,
+                        deficit_rl,
+                    )
+                )
+
+                student_break_preference_vars.extend(
+                    [
+                        deficit_lr * weight,
+                        deficit_rl * weight,
+                    ]
+                )
+
+                # If the lessons are not both on this date, this preference
+                # contributes nothing.
+                model.add(deficit_lr == 0).only_enforce_if(left_date.Not())
+                model.add(deficit_lr == 0).only_enforce_if(right_date.Not())
+                model.add(deficit_rl == 0).only_enforce_if(left_date.Not())
+                model.add(deficit_rl == 0).only_enforce_if(right_date.Not())
+
+                # Only the chronological direction that is actually selected
+                # may carry a deficit.
+                model.add(deficit_lr == 0).only_enforce_if(
+                    [left_date, right_date, order.Not()]
+                )
+                model.add(deficit_rl == 0).only_enforce_if(
+                    [left_date, right_date, order]
                 )
 
             for left_room in room_ids_by_occurrence[left_id]:
@@ -1006,24 +1073,18 @@ def solve_multi_day_week(
 
                         student_break_rule_constraints += 2
 
-                    # Soft scoped break preferences.
-                    for rule_index, rule in enumerate(applicable_rules):
-                        if rule["hard"]:
-                            continue
-
-                        required = int(rule["minBreakMinutes"])
-                        weight = int(rule["weight"])
-
-                        if required <= 0 or weight <= 0:
-                            continue
-
-                        # Deficit when left is before right.
-                        deficit_lr = model.new_int_var(
-                            0,
-                            required,
-                            f"break_pref_lr_{left_id}_{right_id}_{date}_{left_room}_{right_room}_{rule_index}",
-                        )
-
+                    # The same pair/date/rule deficit is constrained by the
+                    # selected room combination. Exactly one room is selected
+                    # for each occurrence, so only one such constraint becomes
+                    # active in the realised timetable.
+                    for (
+                        _rule_index,
+                        _rule,
+                        required,
+                        _weight,
+                        deficit_lr,
+                        deficit_rl,
+                    ) in soft_rule_vars:
                         model.add(
                             deficit_lr
                             >= required
@@ -1036,22 +1097,6 @@ def solve_multi_day_week(
                         ).only_enforce_if(base_literals + [order])
 
                         model.add(
-                            deficit_lr == 0
-                        ).only_enforce_if(
-                            [
-                                *base_literals,
-                                order.Not(),
-                            ]
-                        )
-
-                        # Deficit when right is before left.
-                        deficit_rl = model.new_int_var(
-                            0,
-                            required,
-                            f"break_pref_rl_{left_id}_{right_id}_{date}_{left_room}_{right_room}_{rule_index}",
-                        )
-
-                        model.add(
                             deficit_rl
                             >= required
                             - (
@@ -1061,34 +1106,6 @@ def solve_multi_day_week(
                                 - travel_rl
                             )
                         ).only_enforce_if(base_literals + [order.Not()])
-
-                        model.add(
-                            deficit_rl == 0
-                        ).only_enforce_if(
-                            [
-                                *base_literals,
-                                order,
-                            ]
-                        )
-
-                        # If either lesson is not on this date / room combination,
-                        # this room-specific deficit must contribute nothing.
-                        model.add(deficit_lr == 0).only_enforce_if(left_date.Not())
-                        model.add(deficit_lr == 0).only_enforce_if(right_date.Not())
-                        model.add(deficit_lr == 0).only_enforce_if(left_room_var.Not())
-                        model.add(deficit_lr == 0).only_enforce_if(right_room_var.Not())
-
-                        model.add(deficit_rl == 0).only_enforce_if(left_date.Not())
-                        model.add(deficit_rl == 0).only_enforce_if(right_date.Not())
-                        model.add(deficit_rl == 0).only_enforce_if(left_room_var.Not())
-                        model.add(deficit_rl == 0).only_enforce_if(right_room_var.Not())
-
-                        student_break_preference_vars.extend(
-                            [
-                                deficit_lr * weight,
-                                deficit_rl * weight,
-                            ]
-                        )
 
     # Instructor-specific break rules are conditional on the instructor
     # actually being selected for both occurrences.

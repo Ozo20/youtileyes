@@ -473,6 +473,14 @@ async function main() {
     studentIds: g.students.map(s => s.studentId),
   }));
 
+  const coursesWithDateBoundRoomPreferences = new Set(
+    rooms.flatMap((room) =>
+      room.coursePreferences
+        .filter((preference) => preference.validFrom || preference.validTo)
+        .map((preference) => preference.courseId),
+    ),
+  );
+
   const placementRules: PlacementRule[] = compileTimeRules(
     timeRules,
     dates,
@@ -495,10 +503,39 @@ async function main() {
     for (const room of rooms) {
       if (!validOn(room, date)) placementRules.push({ ruleId: room.id, name: `Room validity: ${room.name}`, date, roomId: room.id, startMinute: 0, endMinute: 1440, hard: true, weight: 0 });
       for (const group of teachingGroups) {
-        const preference = room.coursePreferences.find(p => p.courseId === group.courseId && validOn(p, date));
-        const hasPreferred = rooms.some(r => r.coursePreferences.some(p => p.courseId === group.courseId && p.suitability === "PREFERRED" && validOn(p, date)));
-        const penalty = preference?.suitability === "PREFERRED" ? 0 : preference?.suitability === "AVOID" ? Math.max(50, preference.penalty) : Math.max(preference?.penalty ?? 0, hasPreferred ? 10 : 0);
-        if (penalty || preference?.suitability === "PROHIBITED") placementRules.push({ ruleId: preference?.id ?? room.id, name: `Room preference: ${room.name}`, date, groupId: group.id, roomId: room.id, startMinute: 0, endMinute: 1440, hard: preference?.suitability === "PROHIBITED", weight: penalty });
+        if (!coursesWithDateBoundRoomPreferences.has(group.courseId)) continue;
+
+        const preference = room.coursePreferences.find(
+          (p) => p.courseId === group.courseId && validOn(p, date),
+        );
+        const hasPreferred = rooms.some((candidateRoom) =>
+          candidateRoom.coursePreferences.some(
+            (p) =>
+              p.courseId === group.courseId &&
+              p.suitability === "PREFERRED" &&
+              validOn(p, date),
+          ),
+        );
+        const penalty =
+          preference?.suitability === "PREFERRED"
+            ? 0
+            : preference?.suitability === "AVOID"
+              ? Math.max(50, preference.penalty)
+              : Math.max(preference?.penalty ?? 0, hasPreferred ? 10 : 0);
+
+        if (penalty || preference?.suitability === "PROHIBITED") {
+          placementRules.push({
+            ruleId: preference?.id ?? room.id,
+            name: `Room preference: ${room.name}`,
+            date,
+            groupId: group.id,
+            roomId: room.id,
+            startMinute: 0,
+            endMinute: 1440,
+            hard: preference?.suitability === "PROHIBITED",
+            weight: penalty,
+          });
+        }
       }
       for (const instructor of instructors) {
         const cost = roomRequirementCost(roomRequirements.filter(r => r.instructorId === instructor.id), new Map(room.features.map(f => [f.featureId, f.quantity])), 1);
@@ -563,12 +600,69 @@ async function main() {
     teachingGroups: teachingGroups.map((group) => {
       const allowedRoomIds: string[] = [];
       const roomPenalties: Record<string, number> = {};
-      const requirements = roomRequirements.filter(rule => rule.courseId === group.courseId || (rule.studentId && group.students.some(s => s.studentId === rule.studentId)));
+
+      const requirements = roomRequirements.filter(
+        (rule) =>
+          rule.courseId === group.courseId ||
+          (rule.studentId &&
+            group.students.some((s) => s.studentId === rule.studentId)),
+      );
+
+      // If any room preference for this course is date-bound, all room-course
+      // preference evaluation stays in placementRules so static and dynamic
+      // penalties cannot accidentally be added together.
+      const roomPreferencesAreDateBound =
+        coursesWithDateBoundRoomPreferences.has(group.courseId);
+
+      const hasStaticPreferredRoom =
+        !roomPreferencesAreDateBound &&
+        rooms.some((candidateRoom) =>
+          candidateRoom.coursePreferences.some(
+            (preference) =>
+              preference.courseId === group.courseId &&
+              preference.suitability === "PREFERRED",
+          ),
+        );
+
       for (const room of rooms) {
-        const cost = roomRequirementCost(requirements, new Map(room.features.map(f => [f.featureId, f.quantity])), group.students.length);
-        if (!cost.allowed) continue;
+        const requirementCost = roomRequirementCost(
+          requirements,
+          new Map(
+            room.features.map((feature) => [
+              feature.featureId,
+              feature.quantity,
+            ]),
+          ),
+          group.students.length,
+        );
+
+        if (!requirementCost.allowed) continue;
+
+        let courseRoomPenalty = 0;
+
+        if (!roomPreferencesAreDateBound) {
+          const preference = room.coursePreferences.find(
+            (item) => item.courseId === group.courseId,
+          );
+
+          if (preference?.suitability === "PROHIBITED") {
+            continue;
+          }
+
+          courseRoomPenalty =
+            preference?.suitability === "PREFERRED"
+              ? 0
+              : preference?.suitability === "AVOID"
+                ? Math.max(50, preference.penalty)
+                : Math.max(
+                    preference?.penalty ?? 0,
+                    hasStaticPreferredRoom ? 10 : 0,
+                  );
+        }
+
         allowedRoomIds.push(room.id);
-        roomPenalties[room.id] = cost.penalty;
+        roomPenalties[room.id] =
+          requirementCost.penalty + courseRoomPenalty;
       }
       if (!allowedRoomIds.length) throw new Error(`No room meets equipment/accessibility requirements for ${group.code ?? group.id}. Required features: ${requirements.filter(r => r.hard).map(r => r.featureId).join(", ")}`);
 

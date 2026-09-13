@@ -11,6 +11,7 @@ import {
   distributeMinutes,
   endOfUtcDay,
   overlapsDay,
+  rebalanceCohortWeeklyCapacity,
   startOfUtcMonday,
   type WeekCapacity,
 } from "@/lib/planning/base-plan";
@@ -66,17 +67,20 @@ export async function saveTeachingRequirement(formData: FormData) {
   const teachingGroupId = requiredText(formData, "teachingGroupId");
   const totalMinutes = hoursToMinutes(formData, "totalHours", true)!;
   const minWeeklyMinutes = hoursToMinutes(formData, "minWeeklyHours");
-  const preferredWeeklyMinutes = hoursToMinutes(formData, "preferredWeeklyHours");
+  const preferredWeeklyMinutes = hoursToMinutes(
+    formData,
+    "preferredWeeklyHours",
+  );
   const maxWeeklyMinutes = hoursToMinutes(formData, "maxWeeklyHours");
   const distributionMode = requiredText(formData, "distributionMode");
   const priority = requiredText(formData, "priority");
   const carryoverAllowed = formData.get("carryoverAllowed") === "on";
 
-  if (![
-    "EVEN_BY_TEACHING_CAPACITY",
-    "EVEN_BY_WEEK",
-    "FLEXIBLE",
-  ].includes(distributionMode)) {
+  if (
+    !["EVEN_BY_TEACHING_CAPACITY", "EVEN_BY_WEEK", "FLEXIBLE"].includes(
+      distributionMode,
+    )
+  ) {
     throw new Error("Invalid distribution mode.");
   }
 
@@ -89,7 +93,9 @@ export async function saveTeachingRequirement(formData: FormData) {
     preferredWeeklyMinutes !== null &&
     minWeeklyMinutes > preferredWeeklyMinutes
   ) {
-    throw new Error("Minimum weekly hours cannot exceed preferred weekly hours.");
+    throw new Error(
+      "Minimum weekly hours cannot exceed preferred weekly hours.",
+    );
   }
 
   if (
@@ -97,7 +103,9 @@ export async function saveTeachingRequirement(formData: FormData) {
     maxWeeklyMinutes !== null &&
     preferredWeeklyMinutes > maxWeeklyMinutes
   ) {
-    throw new Error("Preferred weekly hours cannot exceed maximum weekly hours.");
+    throw new Error(
+      "Preferred weekly hours cannot exceed maximum weekly hours.",
+    );
   }
 
   if (
@@ -136,7 +144,8 @@ export async function saveTeachingRequirement(formData: FormData) {
     include: { course: true },
   });
 
-  if (!group) throw new Error("Teaching group not found in this academic period.");
+  if (!group)
+    throw new Error("Teaching group not found in this academic period.");
 
   const correlationId = randomUUID();
 
@@ -165,9 +174,7 @@ export async function saveTeachingRequirement(formData: FormData) {
         preferredWeeklyMinutes,
         maxWeeklyMinutes,
         distributionMode: distributionMode as
-          | "EVEN_BY_TEACHING_CAPACITY"
-          | "EVEN_BY_WEEK"
-          | "FLEXIBLE",
+          "EVEN_BY_TEACHING_CAPACITY" | "EVEN_BY_WEEK" | "FLEXIBLE",
         carryoverAllowed,
         priority: priority as "LOW" | "NORMAL" | "HIGH" | "CRITICAL",
         active: true,
@@ -182,9 +189,7 @@ export async function saveTeachingRequirement(formData: FormData) {
         preferredWeeklyMinutes,
         maxWeeklyMinutes,
         distributionMode: distributionMode as
-          | "EVEN_BY_TEACHING_CAPACITY"
-          | "EVEN_BY_WEEK"
-          | "FLEXIBLE",
+          "EVEN_BY_TEACHING_CAPACITY" | "EVEN_BY_WEEK" | "FLEXIBLE",
         carryoverAllowed,
         priority: priority as "LOW" | "NORMAL" | "HIGH" | "CRITICAL",
       },
@@ -293,6 +298,16 @@ export async function generateBasePlanAllocations(formData: FormData) {
     throw new Error("No active teaching requirements are configured.");
   }
 
+  const loadProfile = await prisma.loadProfile.findFirst({
+    where: {
+      tenantId,
+      active: true,
+    },
+    orderBy: {
+      code: "asc",
+    },
+  });
+
   const generated = requirements.map((requirement) => {
     const weekMap = new Map<string, WeekCapacity>();
 
@@ -319,19 +334,24 @@ export async function generateBasePlanAllocations(formData: FormData) {
             !exception.organisationUnitId &&
             !exception.studentCohortId &&
             !exception.teachingGroupId;
-          const targetsGroup = exception.teachingGroupId === requirement.teachingGroupId;
+          const targetsGroup =
+            exception.teachingGroupId === requirement.teachingGroupId;
           const targetsCohort =
             Boolean(requirement.teachingGroup.studentCohortId) &&
-            exception.studentCohortId === requirement.teachingGroup.studentCohortId;
+            exception.studentCohortId ===
+              requirement.teachingGroup.studentCohortId;
 
-          return (globalClosure || targetsGroup || targetsCohort) &&
-            overlapsDay(exception.startAt, exception.endAt, day.date);
+          return (
+            (globalClosure || targetsGroup || targetsCohort) &&
+            overlapsDay(exception.startAt, exception.endAt, day.date)
+          );
         });
 
         if (!blocked) {
           current.availableTeachingDays += 1;
         } else {
-          current.adjustmentReason = "Blocking planning exception reduces teaching capacity";
+          current.adjustmentReason =
+            "Blocking planning exception reduces teaching capacity";
         }
       }
 
@@ -339,11 +359,19 @@ export async function generateBasePlanAllocations(formData: FormData) {
     }
 
     const weeks = Array.from(weekMap.values()).sort(
-      (left, right) => left.weekStartDate.getTime() - right.weekStartDate.getTime(),
+      (left, right) =>
+        left.weekStartDate.getTime() - right.weekStartDate.getTime(),
     );
 
     const quantumMinutes = Math.max(
       requirement.teachingGroup.course.minSessionMinutes ?? 45,
+      1,
+    );
+
+    const sessionMinutes = Math.max(
+      requirement.teachingGroup.course.preferredSessionMinutes ??
+        requirement.teachingGroup.course.minSessionMinutes ??
+        45,
       1,
     );
 
@@ -352,8 +380,7 @@ export async function generateBasePlanAllocations(formData: FormData) {
     ).length;
 
     const groupLabel =
-      requirement.teachingGroup.code ??
-      requirement.teachingGroup.name;
+      requirement.teachingGroup.code ?? requirement.teachingGroup.name;
     const courseLabel =
       requirement.teachingGroup.course.code ??
       requirement.teachingGroup.course.name;
@@ -361,8 +388,7 @@ export async function generateBasePlanAllocations(formData: FormData) {
 
     if (
       requirement.minWeeklyMinutes !== null &&
-      requirement.totalMinutes <
-        requirement.minWeeklyMinutes * activeWeekCount
+      requirement.totalMinutes < requirement.minWeeklyMinutes * activeWeekCount
     ) {
       returnToBasePlanError(
         `${requirementLabel}: ${displayHours(requirement.totalMinutes)} for the period is too low for a minimum of ${displayHours(requirement.minWeeklyMinutes)} per teaching week across ${activeWeekCount} weeks. Reduce Min h/w or increase the period total.`,
@@ -371,8 +397,7 @@ export async function generateBasePlanAllocations(formData: FormData) {
 
     if (
       requirement.maxWeeklyMinutes !== null &&
-      requirement.totalMinutes >
-        requirement.maxWeeklyMinutes * activeWeekCount
+      requirement.totalMinutes > requirement.maxWeeklyMinutes * activeWeekCount
     ) {
       returnToBasePlanError(
         `${requirementLabel}: ${displayHours(requirement.totalMinutes)} cannot fit within a maximum of ${displayHours(requirement.maxWeeklyMinutes)} per teaching week across ${activeWeekCount} weeks. Increase Max h/w or reduce the period total.`,
@@ -397,13 +422,50 @@ export async function generateBasePlanAllocations(formData: FormData) {
           ? error.message
           : "The weekly teaching demand could not be allocated.";
 
-      returnToBasePlanError(
-        `${requirementLabel}: ${message}`,
+      returnToBasePlanError(`${requirementLabel}: ${message}`);
+    }
+
+    return {
+      requirement,
+      allocations,
+      quantumMinutes,
+      sessionMinutes,
+    };
+  });
+
+  const rebalanced = rebalanceCohortWeeklyCapacity({
+    items: generated.map((item) => ({
+      id: item.requirement.id,
+      cohortId: item.requirement.teachingGroup.studentCohortId,
+      priority: item.requirement.priority,
+      carryoverAllowed: item.requirement.carryoverAllowed,
+      minWeeklyMinutes: item.requirement.minWeeklyMinutes,
+      maxWeeklyMinutes: item.requirement.maxWeeklyMinutes,
+      quantumMinutes: item.quantumMinutes,
+      sessionMinutes: item.sessionMinutes,
+      allocations: item.allocations,
+    })),
+    limits: {
+      maxSessionsPerDay: loadProfile?.maxSessionsPerDay ?? null,
+      maxTeachingMinutesPerDay: loadProfile?.maxTeachingMinutesPerDay ?? null,
+    },
+  });
+
+  const rebalancedByRequirementId = new Map(
+    rebalanced.map((item) => [item.id, item]),
+  );
+
+  for (const item of generated) {
+    const adjusted = rebalancedByRequirementId.get(item.requirement.id);
+
+    if (!adjusted) {
+      throw new Error(
+        `Rebalanced Base Plan allocation was not found for requirement ${item.requirement.id}.`,
       );
     }
 
-    return { requirement, allocations };
-  });
+    item.allocations = adjusted.allocations;
+  }
 
   const correlationId = randomUUID();
 
@@ -454,7 +516,6 @@ export async function generateBasePlanAllocations(formData: FormData) {
       },
     });
   });
-
 
   returnToBasePlan("allocations-generated");
 }
@@ -515,8 +576,7 @@ export async function createBasePlanRevision(formData: FormData) {
       _max: { version: true },
     });
 
-    const nextVersion =
-      (highestVersion._max.version ?? source.version) + 1;
+    const nextVersion = (highestVersion._max.version ?? source.version) + 1;
 
     const created = await tx.plan.create({
       data: {
@@ -544,8 +604,7 @@ export async function createBasePlanRevision(formData: FormData) {
           totalMinutes: requirement.totalMinutes,
           distributionMode: requirement.distributionMode,
           minWeeklyMinutes: requirement.minWeeklyMinutes,
-          preferredWeeklyMinutes:
-            requirement.preferredWeeklyMinutes,
+          preferredWeeklyMinutes: requirement.preferredWeeklyMinutes,
           maxWeeklyMinutes: requirement.maxWeeklyMinutes,
           carryoverAllowed: requirement.carryoverAllowed,
           priority: requirement.priority,
@@ -557,8 +616,7 @@ export async function createBasePlanRevision(formData: FormData) {
               targetMinutes: week.targetMinutes,
               minMinutes: week.minMinutes,
               maxMinutes: week.maxMinutes,
-              availableTeachingDays:
-                week.availableTeachingDays,
+              availableTeachingDays: week.availableTeachingDays,
               adjustmentReason: week.adjustmentReason,
             })),
           },
@@ -586,8 +644,7 @@ export async function createBasePlanRevision(formData: FormData) {
         sourceVersion: source.version,
         newPlanId: created.id,
         newVersion: created.version,
-        clonedRequirementCount:
-          source.teachingRequirements.length,
+        clonedRequirementCount: source.teachingRequirements.length,
       },
     });
 

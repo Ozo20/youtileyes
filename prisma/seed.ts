@@ -479,6 +479,8 @@ async function main() {
         count: 1,
         requiredQualificationId: qualificationByCode["SUBJECT_LEAD"].id,
         minimumQualificationLevel: 2,
+        minimumCourseLevel: 2,
+        preferredCourseLevel: 3,
         priority: 200,
         hard: true,
       },
@@ -490,6 +492,8 @@ async function main() {
         count: 1,
         requiredQualificationId: qualificationByCode["TEACHING_SUPPORT"].id,
         minimumQualificationLevel: 1,
+        minimumCourseLevel: 1,
+        preferredCourseLevel: 2,
         priority: 180,
         hard: true,
       },
@@ -1026,6 +1030,255 @@ async function main() {
     });
   }
 
+  // The small demo already links Per Olsen to FYS and gives him the
+  // TEACHING_SUPPORT qualification. Give that existing FYS link an explicit
+  // numeric competence level so he can satisfy the hard FYS ASSISTANT role.
+  //
+  // Kari remains the stronger FYS lead; Per is deliberately only level 1.
+  const perOlsen = await prisma.instructor.findFirstOrThrow({
+    where: {
+      tenantId: tenant.id,
+      firstName: "Per",
+      lastName: "Olsen",
+      status: "ACTIVE",
+    },
+  });
+
+  await prisma.instructorCourse.update({
+    where: {
+      tenantId_instructorId_courseId: {
+        tenantId: tenant.id,
+        instructorId: perOlsen.id,
+        courseId: allCourseByCode.FYS.id,
+      },
+    },
+    data: {
+      competenceLevel: 1,
+      active: true,
+    },
+  });
+
+  // Numeric course competence and general teaching preferences.
+  //
+  // PRIMARY / SECONDARY / SUPPORT still describes the instructor's role,
+  // while competenceLevel is the numeric solver signal used by staffing
+  // minimum/preferred levels.
+  const expandedCourseCompetence = [
+    ["T1", "MAT", 3, "PREFER", 120],
+    ["T1", "FYS", 3, "NEUTRAL", 100],
+    ["T2", "ENG", 3, "PREFER", 120],
+    ["T2", "NOR", 3, "NEUTRAL", 100],
+
+    ["T3", "MAT", 3, "PREFER", 140],
+    ["T3", "FYS", 2, "NEUTRAL", 100],
+
+    ["T4", "ENG", 3, "PREFER", 140],
+    ["T4", "NOR", 2, "NEUTRAL", 100],
+
+    ["T5", "FYS", 3, "PREFER", 180],
+    ["T5", "MAT", 1, "AVOID", 120],
+
+    ["T6", "NOR", 3, "PREFER", 150],
+    ["T6", "HIS", 3, "NEUTRAL", 100],
+
+    ["T7", "SAM", 3, "PREFER", 150],
+    ["T7", "GEO", 3, "NEUTRAL", 100],
+
+    ["T8", "IT", 3, "PREFER", 200],
+    ["T8", "MAT", 2, "NEUTRAL", 100],
+
+    ["T9", "ENG", 3, "PREFER", 140],
+    ["T9", "SAM", 2, "NEUTRAL", 100],
+
+    ["T10", "HIS", 3, "PREFER", 160],
+    ["T10", "GEO", 3, "NEUTRAL", 100],
+
+    ["T11", "IT", 3, "PREFER", 160],
+    ["T11", "FYS", 1, "AVOID", 150],
+
+    ["T12", "NOR", 3, "PREFER", 140],
+    ["T12", "ENG", 2, "NEUTRAL", 100],
+  ] as const;
+
+  for (
+    const [
+      instructorExternalId,
+      courseCode,
+      competenceLevel,
+      preference,
+      preferenceWeight,
+    ] of expandedCourseCompetence
+  ) {
+    await prisma.instructorCourse.update({
+      where: {
+        tenantId_instructorId_courseId: {
+          tenantId: tenant.id,
+          instructorId: expandedInstructorByExternalId[instructorExternalId].id,
+          courseId: allCourseByCode[courseCode].id,
+        },
+      },
+      data: {
+        competenceLevel,
+        preference,
+        preferenceWeight,
+        active: true,
+      },
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Room features and inventory
+  // ----------------------------------------------------------------
+  const roomFeatureDefinitions = [
+    ["PROJECTOR", "Projector"],
+    ["COMPUTER", "Computer workstation"],
+    ["LAB_STATION", "Laboratory station"],
+    ["SINK", "Laboratory sink"],
+    ["STEP_FREE", "Step-free access"],
+  ] as const;
+
+  const seededRoomFeatures: Record<string, { id: string }> = {};
+
+  for (const [code, name] of roomFeatureDefinitions) {
+    const feature = await prisma.roomFeature.upsert({
+      where: {
+        tenantId_code: {
+          tenantId: tenant.id,
+          code,
+        },
+      },
+      update: { name },
+      create: {
+        tenantId: tenant.id,
+        code,
+        name,
+      },
+    });
+
+    seededRoomFeatures[code] = feature;
+  }
+
+  const roomFeatureInventory = [
+    ["A10", "PROJECTOR", 1],
+    ["A11", "PROJECTOR", 1],
+    ["B14", "PROJECTOR", 1],
+    ["C20", "PROJECTOR", 1],
+    ["C21", "PROJECTOR", 1],
+    ["D30", "PROJECTOR", 1],
+    ["LAB1", "PROJECTOR", 1],
+    ["LAB2", "PROJECTOR", 1],
+
+    ["C21", "COMPUTER", 24],
+
+    ["LAB1", "LAB_STATION", 24],
+    ["LAB2", "LAB_STATION", 24],
+    ["LAB1", "SINK", 6],
+    ["LAB2", "SINK", 6],
+
+    ["A10", "STEP_FREE", 1],
+    ["C20", "STEP_FREE", 1],
+    ["C21", "STEP_FREE", 1],
+    ["D30", "STEP_FREE", 1],
+  ] as const;
+
+  for (const [roomCode, featureCode, quantity] of roomFeatureInventory) {
+    const roomId = expandedRoomByCode[roomCode].id;
+    const featureId = seededRoomFeatures[featureCode].id;
+
+    await prisma.roomFeatureValue.upsert({
+      where: {
+        tenantId_roomId_featureId: {
+          tenantId: tenant.id,
+          roomId,
+          featureId,
+        },
+      },
+      update: { quantity },
+      create: {
+        tenantId: tenant.id,
+        roomId,
+        featureId,
+        quantity,
+      },
+    });
+  }
+
+  async function seedRoomRequirement(input: {
+    featureCode: string;
+    courseCode?: string;
+    studentId?: string;
+    instructorExternalId?: string;
+    quantity: number;
+    perStudent?: boolean;
+    hard: boolean;
+    weight: number;
+  }) {
+    const featureId = seededRoomFeatures[input.featureCode].id;
+    const courseId = input.courseCode
+      ? allCourseByCode[input.courseCode].id
+      : null;
+    const instructorId = input.instructorExternalId
+      ? expandedInstructorByExternalId[input.instructorExternalId].id
+      : null;
+    const studentId = input.studentId ?? null;
+
+    const existing = await prisma.roomRequirement.findFirst({
+      where: {
+        tenantId: tenant.id,
+        featureId,
+        courseId,
+        studentId,
+        instructorId,
+      },
+    });
+
+    const data = {
+      quantity: input.quantity,
+      perStudent: input.perStudent ?? false,
+      hard: input.hard,
+      weight: input.weight,
+      active: true,
+    };
+
+    if (existing) {
+      await prisma.roomRequirement.update({
+        where: { id: existing.id },
+        data,
+      });
+    } else {
+      await prisma.roomRequirement.create({
+        data: {
+          tenantId: tenant.id,
+          featureId,
+          courseId,
+          studentId,
+          instructorId,
+          ...data,
+        },
+      });
+    }
+  }
+
+  // IT requires one workstation per participating student.
+  await seedRoomRequirement({
+    featureCode: "COMPUTER",
+    courseCode: "IT",
+    quantity: 1,
+    perStudent: true,
+    hard: true,
+    weight: 1000,
+  });
+
+  // Physics strongly prefers a proper laboratory but may be placed elsewhere
+  // if the overall timetable requires it.
+  await seedRoomRequirement({
+    featureCode: "LAB_STATION",
+    courseCode: "FYS",
+    quantity: 1,
+    hard: false,
+    weight: 150,
+  });
+
   // Eight ordinary 45-minute timetable blocks. Courses that prefer 90 minutes
   // can later consume adjacent blocks when the long-horizon solver supports
   // explicit double-block composition.
@@ -1098,6 +1351,45 @@ async function main() {
     expandedCohortByCode[code] = seededCohort;
   }
 
+  // Clean up the obsolete ST2A-06 row created by an earlier expanded seed.
+  // The original small demo already contains S1-S6, so ST2A-06 would otherwise
+  // leave ST2A with 21 active students.
+  const obsoleteSt2A06 = await prisma.student.findFirst({
+    where: {
+      tenantId: tenant.id,
+      externalId: "ST2A-06",
+      sourceSystem: "SEED",
+    },
+  });
+
+  if (obsoleteSt2A06) {
+    await prisma.studentCohortMember.deleteMany({
+      where: {
+        tenantId: tenant.id,
+        studentId: obsoleteSt2A06.id,
+      },
+    });
+
+    await prisma.teachingGroupStudent.deleteMany({
+      where: {
+        tenantId: tenant.id,
+        studentId: obsoleteSt2A06.id,
+      },
+    });
+
+    await prisma.studentCourseRequirement.deleteMany({
+      where: {
+        tenantId: tenant.id,
+        studentId: obsoleteSt2A06.id,
+      },
+    });
+
+    await prisma.student.update({
+      where: { id: obsoleteSt2A06.id },
+      data: { status: "INACTIVE" },
+    });
+  }
+
   const expandedStudentsByCohort: Record<string, Array<{ id: string }>> = {
     ST2A: [...students],
     ST2B: [],
@@ -1105,7 +1397,7 @@ async function main() {
     ST3B: [],
   };
 
-  // ST2A already contains S1-S5 from the small demo. Add 15 more students, and
+  // ST2A already contains S1-S6 from the small demo. Add 14 more students, and
   // create 20 students in each of the other three classes: 80 students total.
   const studentSeedDefinitions: Array<{
     cohortCode: string;
@@ -1114,7 +1406,7 @@ async function main() {
     lastName: string;
   }> = [];
 
-  for (let index = 6; index <= 20; index += 1) {
+  for (let index = 7; index <= 20; index += 1) {
     studentSeedDefinitions.push({
       cohortCode: "ST2A",
       externalId: `ST2A-${String(index).padStart(2, "0")}`,
@@ -1179,6 +1471,22 @@ async function main() {
       },
     });
   }
+
+  // Individual functional room need. Keep this about the functional
+  // requirement rather than medical/diagnostic information.
+  const stepFreeStudent = expandedStudentsByCohort.ST3B[0];
+
+  if (!stepFreeStudent) {
+    throw new Error("Expanded seed expected at least one ST3B student.");
+  }
+
+  await seedRoomRequirement({
+    featureCode: "STEP_FREE",
+    studentId: stepFreeStudent.id,
+    quantity: 1,
+    hard: true,
+    weight: 1000,
+  });
 
   const subjectDemand = {
     MAT: { total: 4320, preferred: 240, min: 180, max: 360, priority: "CRITICAL" },
@@ -1311,6 +1619,130 @@ async function main() {
       });
     }
   }
+
+  // ----------------------------------------------------------------
+  // Constraint-rich planning preferences
+  // ----------------------------------------------------------------
+  async function seedPlanningRule(input: {
+    name: string;
+    ruleType: "AVOID_TIME_WINDOW" | "MIN_BREAK_MINUTES";
+    scopeType:
+      | "TENANT"
+      | "STUDENT_COHORT"
+      | "TEACHING_GROUP"
+      | "COURSE"
+      | "STUDENT"
+      | "INSTRUCTOR";
+    audience: string;
+    constraintType: "HARD" | "SOFT";
+    weight: number;
+    weekdays: number[];
+    startMinute?: number;
+    endMinute?: number;
+    valueInt?: number;
+    studentCohortId?: string;
+    teachingGroupId?: string;
+    courseId?: string;
+    studentId?: string;
+    instructorId?: string;
+  }) {
+    const existing = await prisma.planningRule.findFirst({
+      where: {
+        tenantId: tenant.id,
+        name: input.name,
+        ruleType: input.ruleType,
+      },
+    });
+
+    const data = {
+      ruleType: input.ruleType,
+      scopeType: input.scopeType,
+      audience: input.audience,
+      constraintType: input.constraintType,
+      weight: input.weight,
+      weekdays: input.weekdays,
+      startMinute: input.startMinute ?? null,
+      endMinute: input.endMinute ?? null,
+      valueInt: input.valueInt ?? null,
+      valueUnit: "MINUTES" as const,
+      studentCohortId: input.studentCohortId ?? null,
+      teachingGroupId: input.teachingGroupId ?? null,
+      courseId: input.courseId ?? null,
+      studentId: input.studentId ?? null,
+      instructorId: input.instructorId ?? null,
+      active: true,
+    };
+
+    if (existing) {
+      await prisma.planningRule.update({
+        where: { id: existing.id },
+        data,
+      });
+    } else {
+      await prisma.planningRule.create({
+        data: {
+          tenantId: tenant.id,
+          name: input.name,
+          ...data,
+        },
+      });
+    }
+  }
+
+  // Maria prefers not to teach on Thursday mornings.
+  await seedPlanningRule({
+    name: "Maria prefers Thursday mornings free",
+    ruleType: "AVOID_TIME_WINDOW",
+    scopeType: "INSTRUCTOR",
+    audience: "INSTRUCTORS",
+    constraintType: "SOFT",
+    weight: 100,
+    weekdays: [4],
+    startMinute: 8 * 60,
+    endMinute: 12 * 60,
+    instructorId: expandedInstructorByExternalId["T9"].id,
+  });
+
+  // History is preferably not placed in the last period on Friday.
+  await seedPlanningRule({
+    name: "History avoids late Friday",
+    ruleType: "AVOID_TIME_WINDOW",
+    scopeType: "COURSE",
+    audience: "STUDENTS",
+    constraintType: "SOFT",
+    weight: 50,
+    weekdays: [5],
+    startMinute: 15 * 60 + 30,
+    endMinute: 17 * 60,
+    courseId: allCourseByCode.HIS.id,
+  });
+
+  // ST2B has a stronger soft break preference than the 15-minute global
+  // hard baseline in STANDARD.
+  await seedPlanningRule({
+    name: "ST2B prefers 25 minute breaks",
+    ruleType: "MIN_BREAK_MINUTES",
+    scopeType: "STUDENT_COHORT",
+    audience: "STUDENTS",
+    constraintType: "SOFT",
+    weight: 100,
+    weekdays: [1, 2, 3, 4, 5],
+    valueInt: 25,
+    studentCohortId: expandedCohortByCode.ST2B.id,
+  });
+
+  // Elise prefers some breathing room between her own teaching sessions.
+  await seedPlanningRule({
+    name: "Elise prefers 20 minute teaching breaks",
+    ruleType: "MIN_BREAK_MINUTES",
+    scopeType: "INSTRUCTOR",
+    audience: "INSTRUCTORS",
+    constraintType: "SOFT",
+    weight: 120,
+    weekdays: [1, 2, 3, 4, 5],
+    valueInt: 20,
+    instructorId: expandedInstructorByExternalId["T11"].id,
+  });
 
   // Materialise student-level subject demand too. This gives later solver and
   // reporting work enough data to test individual-vs-cohort requirement logic.
@@ -1547,7 +1979,7 @@ async function main() {
       maxContinuousTeachingMinutes: 120,
       minBreakMinutes: 15,
       minLunchMinutes: 30,
-      maxSessionsPerDay: 4,
+      maxSessionsPerDay: 5,
       minRealBreakMinutes: 15,
       travelConsumesBreakTime: true,
       active: true,
@@ -1560,7 +1992,7 @@ async function main() {
       maxContinuousTeachingMinutes: 120,
       minBreakMinutes: 15,
       minLunchMinutes: 30,
-      maxSessionsPerDay: 4,
+      maxSessionsPerDay: 5,
       minRealBreakMinutes: 15,
       travelConsumesBreakTime: true,
     },

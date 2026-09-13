@@ -34,15 +34,15 @@ export function overlapsDay(startAt: Date, endAt: Date, date: Date): boolean {
 }
 
 export function isoWeekNumber(date: Date): number {
-  const target = new Date(Date.UTC(
-    date.getUTCFullYear(),
-    date.getUTCMonth(),
-    date.getUTCDate(),
-  ));
+  const target = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
   const dayNumber = target.getUTCDay() || 7;
   target.setUTCDate(target.getUTCDate() + 4 - dayNumber);
   const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
-  return Math.ceil((((target.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return Math.ceil(
+    ((target.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
+  );
 }
 
 export function distributeMinutes(args: {
@@ -85,7 +85,7 @@ export function distributeMinutes(args: {
   if (totalMinutes < minimumRequired) {
     throw new Error(
       `The period total is too low for the weekly minimum. ` +
-      `${eligible.length} teaching weeks × ${minimum} minutes requires at least ${minimumRequired} minutes.`,
+        `${eligible.length} teaching weeks × ${minimum} minutes requires at least ${minimumRequired} minutes.`,
     );
   }
 
@@ -94,7 +94,7 @@ export function distributeMinutes(args: {
     if (totalMinutes > maximumCapacity) {
       throw new Error(
         `The period total is too high for the weekly maximum. ` +
-        `${eligible.length} teaching weeks × ${maximum} minutes allows at most ${maximumCapacity} minutes.`,
+          `${eligible.length} teaching weeks × ${maximum} minutes allows at most ${maximumCapacity} minutes.`,
       );
     }
   }
@@ -147,18 +147,11 @@ export function distributeMinutes(args: {
       let placed = false;
 
       for (const candidate of candidates) {
-        const amount = Math.min(
-          quantumMinutes,
-          remaining,
-          candidate.room,
-        );
+        const amount = Math.min(quantumMinutes, remaining, candidate.room);
 
         if (amount <= 0) continue;
 
-        targets.set(
-          candidate.key,
-          (targets.get(candidate.key) ?? 0) + amount,
-        );
+        targets.set(candidate.key, (targets.get(candidate.key) ?? 0) + amount);
         remaining -= amount;
         placed = true;
 
@@ -197,4 +190,304 @@ export function distributeMinutes(args: {
     ...week,
     targetMinutes: targets.get(dateKey(week.weekStartDate)) ?? 0,
   }));
+}
+
+export type CohortCapacityPriority = "LOW" | "NORMAL" | "HIGH" | "CRITICAL";
+
+export type CohortCapacityItem = {
+  id: string;
+  cohortId: string | null;
+  priority: CohortCapacityPriority;
+  carryoverAllowed: boolean;
+  minWeeklyMinutes: number | null;
+  maxWeeklyMinutes: number | null;
+  quantumMinutes: number;
+  sessionMinutes: number;
+  allocations: WeekAllocation[];
+};
+
+export type CohortCapacityLimits = {
+  maxSessionsPerDay: number | null;
+  maxTeachingMinutesPerDay: number | null;
+};
+
+function priorityValue(priority: CohortCapacityPriority): number {
+  switch (priority) {
+    case "CRITICAL":
+      return 3;
+    case "HIGH":
+      return 2;
+    case "NORMAL":
+      return 1;
+    case "LOW":
+      return 0;
+  }
+}
+
+export function rebalanceCohortWeeklyCapacity(args: {
+  items: CohortCapacityItem[];
+  limits: CohortCapacityLimits;
+}): CohortCapacityItem[] {
+  const { limits } = args;
+
+  const items = args.items.map((item) => ({
+    ...item,
+    allocations: item.allocations.map((allocation) => ({
+      ...allocation,
+    })),
+  }));
+
+  const capacityEnabled =
+    (limits.maxSessionsPerDay !== null && limits.maxSessionsPerDay > 0) ||
+    (limits.maxTeachingMinutesPerDay !== null &&
+      limits.maxTeachingMinutesPerDay > 0);
+
+  if (!capacityEnabled) {
+    return items;
+  }
+
+  const cohortIds = Array.from(
+    new Set(
+      items
+        .map((item) => item.cohortId)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  for (const cohortId of cohortIds) {
+    const cohortItems = items.filter((item) => item.cohortId === cohortId);
+
+    const weekKeys = Array.from(
+      new Set(
+        cohortItems.flatMap((item) =>
+          item.allocations.map((allocation) =>
+            dateKey(allocation.weekStartDate),
+          ),
+        ),
+      ),
+    ).sort();
+
+    const allocationFor = (item: CohortCapacityItem, weekKey: string) =>
+      item.allocations.find(
+        (allocation) => dateKey(allocation.weekStartDate) === weekKey,
+      );
+
+    const getWeekLoad = (weekKey: string) => {
+      let sessions = 0;
+      let minutes = 0;
+      let availableTeachingDays = 0;
+
+      for (const item of cohortItems) {
+        const allocation = allocationFor(item, weekKey);
+        if (!allocation) continue;
+
+        minutes += allocation.targetMinutes;
+
+        if (allocation.targetMinutes > 0) {
+          sessions += Math.ceil(allocation.targetMinutes / item.sessionMinutes);
+        }
+
+        // A cohort/global block reduces this value for every group.
+        // A group-specific block must not make the whole cohort appear
+        // unavailable on a day that its other groups may still use.
+        availableTeachingDays = Math.max(
+          availableTeachingDays,
+          allocation.availableTeachingDays,
+        );
+      }
+
+      return {
+        sessions,
+        minutes,
+        availableTeachingDays,
+        sessionCapacity:
+          limits.maxSessionsPerDay === null
+            ? Number.POSITIVE_INFINITY
+            : availableTeachingDays * limits.maxSessionsPerDay,
+        minuteCapacity:
+          limits.maxTeachingMinutesPerDay === null
+            ? Number.POSITIVE_INFINITY
+            : availableTeachingDays * limits.maxTeachingMinutesPerDay,
+      };
+    };
+
+    for (const sourceWeekKey of weekKeys) {
+      let safetyCounter = 0;
+
+      while (true) {
+        const sourceLoad = getWeekLoad(sourceWeekKey);
+
+        const sessionOverflow =
+          sourceLoad.sessions > sourceLoad.sessionCapacity;
+
+        const minuteOverflow = sourceLoad.minutes > sourceLoad.minuteCapacity;
+
+        if (!sessionOverflow && !minuteOverflow) {
+          break;
+        }
+
+        safetyCounter += 1;
+
+        if (safetyCounter > 1000) {
+          throw new Error(
+            `Unable to rebalance weekly capacity for cohort ${cohortId}.`,
+          );
+        }
+
+        const sourceItems = [...cohortItems].sort(
+          (left, right) =>
+            priorityValue(left.priority) - priorityValue(right.priority) ||
+            left.id.localeCompare(right.id),
+        );
+
+        let moved = false;
+
+        for (const sourceItem of sourceItems) {
+          if (!sourceItem.carryoverAllowed) continue;
+
+          const sourceAllocation = allocationFor(sourceItem, sourceWeekKey);
+
+          if (!sourceAllocation || sourceAllocation.targetMinutes <= 0) {
+            continue;
+          }
+
+          const minimum = sourceItem.minWeeklyMinutes ?? 0;
+
+          const maxMovable = sourceAllocation.targetMinutes - minimum;
+
+          if (maxMovable <= 0) continue;
+
+          const sessionsBefore = Math.ceil(
+            sourceAllocation.targetMinutes / sourceItem.sessionMinutes,
+          );
+
+          let amount = sourceItem.quantumMinutes;
+
+          // When session count is the binding limit, move enough
+          // minutes to remove at least one actual occurrence.
+          if (sessionOverflow && sessionsBefore > 0) {
+            const targetForOneFewerSession =
+              (sessionsBefore - 1) * sourceItem.sessionMinutes;
+
+            const requiredReduction =
+              sourceAllocation.targetMinutes - targetForOneFewerSession;
+
+            amount =
+              Math.ceil(
+                Math.max(requiredReduction, 1) / sourceItem.quantumMinutes,
+              ) * sourceItem.quantumMinutes;
+          }
+
+          amount = Math.min(amount, maxMovable);
+
+          if (amount <= 0) continue;
+
+          const sourceMinutesAfter = sourceAllocation.targetMinutes - amount;
+
+          const sourceSessionsAfter =
+            sourceMinutesAfter > 0
+              ? Math.ceil(sourceMinutesAfter / sourceItem.sessionMinutes)
+              : 0;
+
+          if (sessionOverflow && sourceSessionsAfter >= sessionsBefore) {
+            continue;
+          }
+
+          const sourceTime = new Date(
+            `${sourceWeekKey}T00:00:00.000Z`,
+          ).getTime();
+
+          const destinationWeekKeys = weekKeys
+            .filter((weekKey) => weekKey !== sourceWeekKey)
+            .sort((left, right) => {
+              const leftDistance = Math.abs(
+                new Date(`${left}T00:00:00.000Z`).getTime() - sourceTime,
+              );
+
+              const rightDistance = Math.abs(
+                new Date(`${right}T00:00:00.000Z`).getTime() - sourceTime,
+              );
+
+              return leftDistance - rightDistance || left.localeCompare(right);
+            });
+
+          for (const destinationWeekKey of destinationWeekKeys) {
+            const destinationAllocation = allocationFor(
+              sourceItem,
+              destinationWeekKey,
+            );
+
+            if (
+              !destinationAllocation ||
+              destinationAllocation.availableTeachingDays <= 0
+            ) {
+              continue;
+            }
+
+            if (
+              sourceItem.maxWeeklyMinutes !== null &&
+              destinationAllocation.targetMinutes + amount >
+                sourceItem.maxWeeklyMinutes
+            ) {
+              continue;
+            }
+
+            const destinationLoad = getWeekLoad(destinationWeekKey);
+
+            const destinationSessionsBefore =
+              destinationAllocation.targetMinutes > 0
+                ? Math.ceil(
+                    destinationAllocation.targetMinutes /
+                      sourceItem.sessionMinutes,
+                  )
+                : 0;
+
+            const destinationSessionsAfter = Math.ceil(
+              (destinationAllocation.targetMinutes + amount) /
+                sourceItem.sessionMinutes,
+            );
+
+            const resultingSessions =
+              destinationLoad.sessions +
+              (destinationSessionsAfter - destinationSessionsBefore);
+
+            const resultingMinutes = destinationLoad.minutes + amount;
+
+            if (
+              resultingSessions > destinationLoad.sessionCapacity ||
+              resultingMinutes > destinationLoad.minuteCapacity
+            ) {
+              continue;
+            }
+
+            sourceAllocation.targetMinutes -= amount;
+            destinationAllocation.targetMinutes += amount;
+
+            sourceAllocation.adjustmentReason =
+              "Teaching demand moved because cohort weekly capacity was reduced";
+
+            destinationAllocation.adjustmentReason =
+              "Teaching demand received from a reduced-capacity week";
+
+            moved = true;
+            break;
+          }
+
+          if (moved) break;
+        }
+
+        if (!moved) {
+          const load = getWeekLoad(sourceWeekKey);
+
+          throw new Error(
+            `Cohort ${cohortId} requires ${load.sessions} sessions / ` +
+              `${load.minutes} minutes in week ${sourceWeekKey}, but only ` +
+              `${load.availableTeachingDays} teaching days are available.`,
+          );
+        }
+      }
+    }
+  }
+
+  return items;
 }
