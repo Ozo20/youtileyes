@@ -6,6 +6,7 @@ import "@/styles/master-data.css";
 import "@/styles/planning.css";
 import "@/styles/schedule.css";
 
+export const dynamic = "force-dynamic";
 export default function PortalLayout({
   children,
 }: Readonly<{

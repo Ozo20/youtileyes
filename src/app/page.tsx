@@ -12,16 +12,14 @@ import {
 import { AuditEventList } from "@/components/audit/audit-event-list";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
 import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
+
+export const dynamic = "force-dynamic";
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
@@ -37,10 +35,7 @@ export default async function HomePage() {
     return (
       <AppShell>
         <div className="page-container">
-          <PageHeader
-            title="Overview"
-            description="No tenant is available."
-          />
+          <PageHeader title="Overview" description="No tenant is available." />
         </div>
       </AppShell>
     );
@@ -62,8 +57,7 @@ export default async function HomePage() {
     },
   });
 
-  const asOfDate =
-    plan?.planningAsOfDate ?? new Date();
+  const asOfDate = plan?.planningAsOfDate ?? new Date();
 
   const [
     latestScenario,
@@ -160,16 +154,9 @@ export default async function HomePage() {
           <StatCard
             label="Latest scenario"
             value={latestScenario?.status ?? "—"}
-            detail={
-              latestScenario?.name ??
-              "No generated scenario"
-            }
+            detail={latestScenario?.name ?? "No generated scenario"}
             icon={<Sparkles size={17} />}
-            tone={
-              latestScenario?.status === "FAILED"
-                ? "danger"
-                : "success"
-            }
+            tone={latestScenario?.status === "FAILED" ? "danger" : "success"}
           />
 
           <StatCard
@@ -193,19 +180,12 @@ export default async function HomePage() {
           <Card>
             <CardHeader>
               <div>
-                <span className="eyebrow">
-                  Planning horizon
-                </span>
-                <h2>
-                  {plan?.name ?? "No active plan"}
-                </h2>
+                <span className="eyebrow">Planning horizon</span>
+                <h2>{plan?.name ?? "No active plan"}</h2>
               </div>
 
               {plan ? (
-                <Link
-                  href="/schedule?view=week"
-                  className="overview-link"
-                >
+                <Link href="/schedule?view=week" className="overview-link">
                   Open schedule
                 </Link>
               ) : null}
@@ -218,9 +198,7 @@ export default async function HomePage() {
                     <dt>As-of date</dt>
                     <dd>
                       {plan.planningAsOfDate
-                        ? dateFormatter.format(
-                            plan.planningAsOfDate,
-                          )
+                        ? dateFormatter.format(plan.planningAsOfDate)
                         : "—"}
                     </dd>
                   </div>
@@ -229,9 +207,7 @@ export default async function HomePage() {
                     <dt>Frozen through</dt>
                     <dd>
                       {plan.frozenThroughDate
-                        ? dateFormatter.format(
-                            plan.frozenThroughDate,
-                          )
+                        ? dateFormatter.format(plan.frozenThroughDate)
                         : "—"}
                     </dd>
                   </div>
@@ -240,9 +216,7 @@ export default async function HomePage() {
                     <dt>Editable from</dt>
                     <dd>
                       {plan.planningStartDate
-                        ? dateFormatter.format(
-                            plan.planningStartDate,
-                          )
+                        ? dateFormatter.format(plan.planningStartDate)
                         : "—"}
                     </dd>
                   </div>
@@ -251,9 +225,7 @@ export default async function HomePage() {
                     <dt>Planning end</dt>
                     <dd>
                       {plan.planningEndDate
-                        ? dateFormatter.format(
-                            plan.planningEndDate,
-                          )
+                        ? dateFormatter.format(plan.planningEndDate)
                         : "—"}
                     </dd>
                   </div>
@@ -271,9 +243,7 @@ export default async function HomePage() {
           <Card>
             <CardHeader>
               <div>
-                <span className="eyebrow">
-                  Resources
-                </span>
+                <span className="eyebrow">Resources</span>
                 <h2>Active master data</h2>
               </div>
             </CardHeader>
@@ -305,25 +275,17 @@ export default async function HomePage() {
         <Card>
           <CardHeader>
             <div>
-              <span className="eyebrow">
-                Recent changes
-              </span>
+              <span className="eyebrow">Recent changes</span>
               <h2>Audit activity</h2>
             </div>
 
-            <Link
-              href="/history"
-              className="overview-link"
-            >
+            <Link href="/history" className="overview-link">
               View full history
             </Link>
           </CardHeader>
 
           <CardContent className="history-list-content">
-            <AuditEventList
-              events={recentEvents}
-              baseHref="/history"
-            />
+            <AuditEventList events={recentEvents} baseHref="/history" />
           </CardContent>
         </Card>
       </div>
