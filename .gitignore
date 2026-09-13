@@ -47,3 +47,7 @@ solver/.venv/
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Local/archive files
+Arkiv.zip
+*.zip
