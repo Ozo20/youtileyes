@@ -126,14 +126,43 @@ def _effective_roles(group: TeachingGroup, room: Room, date: str | None = None) 
     return roles
 
 
+_COURSE_QUALIFICATION_RANK = {
+    "SUPPORT": 1,
+    "SECONDARY": 2,
+    "PRIMARY": 3,
+}
+
+
 def _qualified_for_role(instructor: Instructor, group: TeachingGroup,
                         role: StaffingRole, date: str | None = None) -> bool:
     if group.course not in instructor.courses:
         return False
     if not _valid_on(date, *instructor.course_validity.get(group.course, [None, None])):
         return False
-    if role.minimum_course_level is not None and instructor.course_levels.get(group.course, 0) < role.minimum_course_level:
+    if role.minimum_course_qualification_level is not None:
+        actual_course_qualification = instructor.course_qualification_levels.get(
+            group.course
+        )
+
+        if actual_course_qualification is None:
+            return False
+
+        if (
+            _COURSE_QUALIFICATION_RANK.get(actual_course_qualification, 0)
+            < _COURSE_QUALIFICATION_RANK.get(
+                role.minimum_course_qualification_level,
+                0,
+            )
+        ):
+            return False
+
+    if (
+        role.minimum_course_level is not None
+        and instructor.course_levels.get(group.course, 0)
+        < role.minimum_course_level
+    ):
         return False
+
     if role.required_qualification_id is None:
         return True
     level = instructor.qualification_levels.get(role.required_qualification_id)

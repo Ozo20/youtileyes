@@ -22,6 +22,7 @@ import {
   getAuditMetadata,
   getAuditText,
 } from "@/lib/audit";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 
 type PageProps = {
@@ -52,9 +53,7 @@ export default async function HistoryPage({
 }: PageProps) {
   const params = await searchParams;
 
-  const tenant = await prisma.tenant.findUnique({
-    where: { code: "DEMO" },
-  });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (

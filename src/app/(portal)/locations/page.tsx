@@ -24,6 +24,7 @@ import {
   saveLocation,
   toggleLocationActive,
 } from "@/lib/masterdata/student-cohort-location-actions";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 
 type PageProps = {
@@ -39,10 +40,7 @@ export default async function LocationsPage({
 }: PageProps) {
   const params = await searchParams;
 
-  const tenant = await prisma.tenant.findUnique({
-    where: { code: "DEMO" },
-    select: { id: true },
-  });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (

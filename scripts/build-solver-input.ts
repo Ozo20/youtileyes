@@ -71,7 +71,9 @@ function minuteOfUtcDay(date: Date): number {
   return date.getUTCHours() * 60 + date.getUTCMinutes();
 }
 
-function qualificationPenalty(level: "PRIMARY" | "SECONDARY" | "SUPPORT"): number {
+function qualificationPenalty(
+  level: "PRIMARY" | "SECONDARY" | "SUPPORT",
+): number {
   switch (level) {
     case "PRIMARY":
       return 0;
@@ -82,7 +84,10 @@ function qualificationPenalty(level: "PRIMARY" | "SECONDARY" | "SUPPORT"): numbe
   }
 }
 
-function exceptionBlockForDate(exception: { startAt: Date; endAt: Date }, date: Date) {
+function exceptionBlockForDate(
+  exception: { startAt: Date; endAt: Date },
+  date: Date,
+) {
   const dayStart = utcDate(dateKey(date));
   const dayEnd = endOfUtcDay(date);
   const start = exception.startAt > dayStart ? exception.startAt : dayStart;
@@ -99,7 +104,9 @@ async function main() {
 
   const tenant = await prisma.tenant.findUnique({ where: { code: "DEMO" } });
   if (!tenant) {
-    throw new Error('Demo tenant "DEMO" was not found. Run npm run db:seed first.');
+    throw new Error(
+      'Demo tenant "DEMO" was not found. Run npm run db:seed first.',
+    );
   }
 
   const scenario = args.scenarioId
@@ -129,8 +136,14 @@ async function main() {
   }
 
   const { plan } = scenario;
-  if (!plan.planningAsOfDate || !plan.planningStartDate || !plan.planningEndDate) {
-    throw new Error("Plan requires planningAsOfDate, planningStartDate and planningEndDate.");
+  if (
+    !plan.planningAsOfDate ||
+    !plan.planningStartDate ||
+    !plan.planningEndDate
+  ) {
+    throw new Error(
+      "Plan requires planningAsOfDate, planningStartDate and planningEndDate.",
+    );
   }
 
   // Keep narrowed, non-null dates in local constants. TypeScript does not preserve
@@ -140,7 +153,9 @@ async function main() {
   const planningEndDate = plan.planningEndDate;
 
   if (planningStartDate <= planningAsOfDate) {
-    throw new Error("planningStartDate must be after planningAsOfDate for normal replanning.");
+    throw new Error(
+      "planningStartDate must be after planningAsOfDate for normal replanning.",
+    );
   }
 
   if (plan.frozenThroughDate && planningStartDate <= plan.frozenThroughDate) {
@@ -201,12 +216,22 @@ async function main() {
 
   const [timeRules, breakRules, roomRequirements] = await Promise.all([
     prisma.planningRule.findMany({
-      where: { tenantId: tenant.id, active: true, ruleType: "AVOID_TIME_WINDOW" },
+      where: {
+        tenantId: tenant.id,
+        active: true,
+        ruleType: "AVOID_TIME_WINDOW",
+      },
     }),
     prisma.planningRule.findMany({
-      where: { tenantId: tenant.id, active: true, ruleType: "MIN_BREAK_MINUTES" },
+      where: {
+        tenantId: tenant.id,
+        active: true,
+        ruleType: "MIN_BREAK_MINUTES",
+      },
     }),
-    prisma.roomRequirement.findMany({ where: { tenantId: tenant.id, active: true } }),
+    prisma.roomRequirement.findMany({
+      where: { tenantId: tenant.id, active: true },
+    }),
   ]);
   const groupById = new Map(teachingGroups.map((group) => [group.id, group]));
 
@@ -349,24 +374,34 @@ async function main() {
 
     const group = groupById.get(allocation.teachingRequirement.teachingGroupId);
     if (!group) {
-      throw new Error(`TeachingGroup ${allocation.teachingRequirement.teachingGroupId} was not found.`);
+      throw new Error(
+        `TeachingGroup ${allocation.teachingRequirement.teachingGroupId} was not found.`,
+      );
     }
 
     const weekEnd = addUtcDays(allocation.weekStartDate, 6);
     const eligibleDays = calendarDays.filter((day) => {
       if (!day.teachingAllowed) return false;
-      if (day.date < allocation.weekStartDate || day.date > weekEnd) return false;
-      if (day.date < planningStartDate || day.date > planningEndDate) return false;
+      if (day.date < allocation.weekStartDate || day.date > weekEnd)
+        return false;
+      if (day.date < planningStartDate || day.date > planningEndDate)
+        return false;
 
       const blockedForGroup = exceptions.some((exception) => {
         const targetsGroup = exception.teachingGroupId === group.id;
         const targetsCohort =
-          Boolean(group.studentCohortId) && exception.studentCohortId === group.studentCohortId;
+          Boolean(group.studentCohortId) &&
+          exception.studentCohortId === group.studentCohortId;
         const targetsStudent =
           Boolean(exception.studentId) &&
-          group.students.some((membership) => membership.studentId === exception.studentId);
+          group.students.some(
+            (membership) => membership.studentId === exception.studentId,
+          );
 
-        return (targetsGroup || targetsCohort || targetsStudent) && overlapsDay(exception.startAt, exception.endAt, day.date);
+        return (
+          (targetsGroup || targetsCohort || targetsStudent) &&
+          overlapsDay(exception.startAt, exception.endAt, day.date)
+        );
       });
 
       return !blockedForGroup;
@@ -379,7 +414,9 @@ async function main() {
     }
 
     const preferredDuration =
-      group.course.preferredSessionMinutes ?? group.course.minSessionMinutes ?? 45;
+      group.course.preferredSessionMinutes ??
+      group.course.minSessionMinutes ??
+      45;
     let remaining = allocation.targetMinutes;
     let occurrenceNumber = 1;
 
@@ -465,12 +502,14 @@ async function main() {
     },
   });
 
-  const dates = calendarDays.filter(d => d.teachingAllowed).map(d => dateKey(d.date));
-  const solverGroups = teachingGroups.map(g => ({
+  const dates = calendarDays
+    .filter((d) => d.teachingAllowed)
+    .map((d) => dateKey(d.date));
+  const solverGroups = teachingGroups.map((g) => ({
     id: g.id,
     courseId: g.courseId,
     studentCohortId: g.studentCohortId,
-    studentIds: g.students.map(s => s.studentId),
+    studentIds: g.students.map((s) => s.studentId),
   }));
 
   const coursesWithDateBoundRoomPreferences = new Set(
@@ -485,7 +524,7 @@ async function main() {
     timeRules,
     dates,
     solverGroups,
-    instructors.map(i => i.id),
+    instructors.map((i) => i.id),
   );
 
   const studentBreakRules = compileStudentBreakRules(
@@ -497,11 +536,21 @@ async function main() {
   const instructorBreakRules = compileInstructorBreakRules(
     breakRules,
     dates,
-    instructors.map(i => i.id),
+    instructors.map((i) => i.id),
   );
   for (const date of dates) {
     for (const room of rooms) {
-      if (!validOn(room, date)) placementRules.push({ ruleId: room.id, name: `Room validity: ${room.name}`, date, roomId: room.id, startMinute: 0, endMinute: 1440, hard: true, weight: 0 });
+      if (!validOn(room, date))
+        placementRules.push({
+          ruleId: room.id,
+          name: `Room validity: ${room.name}`,
+          date,
+          roomId: room.id,
+          startMinute: 0,
+          endMinute: 1440,
+          hard: true,
+          weight: 0,
+        });
       for (const group of teachingGroups) {
         if (!coursesWithDateBoundRoomPreferences.has(group.courseId)) continue;
 
@@ -538,8 +587,23 @@ async function main() {
         }
       }
       for (const instructor of instructors) {
-        const cost = roomRequirementCost(roomRequirements.filter(r => r.instructorId === instructor.id), new Map(room.features.map(f => [f.featureId, f.quantity])), 1);
-        if (!cost.allowed || cost.penalty) placementRules.push({ ruleId: instructor.id, name: "Instructor room requirements", date, instructorId: instructor.id, roomId: room.id, startMinute: 0, endMinute: 1440, hard: !cost.allowed, weight: cost.penalty });
+        const cost = roomRequirementCost(
+          roomRequirements.filter((r) => r.instructorId === instructor.id),
+          new Map(room.features.map((f) => [f.featureId, f.quantity])),
+          1,
+        );
+        if (!cost.allowed || cost.penalty)
+          placementRules.push({
+            ruleId: instructor.id,
+            name: "Instructor room requirements",
+            date,
+            instructorId: instructor.id,
+            roomId: room.id,
+            startMinute: 0,
+            endMinute: 1440,
+            hard: !cost.allowed,
+            weight: cost.penalty,
+          });
       }
     }
   }
@@ -550,52 +614,103 @@ async function main() {
     planScenarioId: scenario.id,
     planningWindow: {
       asOfDate: dateKey(planningAsOfDate),
-      frozenThroughDate: plan.frozenThroughDate ? dateKey(plan.frozenThroughDate) : null,
+      frozenThroughDate: plan.frozenThroughDate
+        ? dateKey(plan.frozenThroughDate)
+        : null,
       startDate: dateKey(planningStartDate),
       endDate: dateKey(planningEndDate),
     },
     startTimes: [
-      clock(8, 15), clock(8, 30), clock(8, 45), clock(9, 0), clock(9, 15), clock(9, 30),
-      clock(9, 45), clock(10, 0), clock(10, 15), clock(10, 30), clock(10, 45), clock(11, 0),
-      clock(11, 15), clock(11, 30), clock(11, 45), clock(12, 0), clock(12, 15), clock(12, 30),
-      clock(12, 45), clock(13, 0), clock(13, 15), clock(13, 30), clock(13, 45), clock(14, 0),
+      clock(8, 15),
+      clock(8, 30),
+      clock(8, 45),
+      clock(9, 0),
+      clock(9, 15),
+      clock(9, 30),
+      clock(9, 45),
+      clock(10, 0),
+      clock(10, 15),
+      clock(10, 30),
+      clock(10, 45),
+      clock(11, 0),
+      clock(11, 15),
+      clock(11, 30),
+      clock(11, 45),
+      clock(12, 0),
+      clock(12, 15),
+      clock(12, 30),
+      clock(12, 45),
+      clock(13, 0),
+      clock(13, 15),
+      clock(13, 30),
+      clock(13, 45),
+      clock(14, 0),
     ],
     instructors: instructors.map((instructor) => ({
       id: instructor.id,
       name: `${instructor.firstName} ${instructor.lastName}`,
       courseIds: instructor.courses.map((link) => link.course.id),
       coursePenalties: Object.fromEntries(
-        instructor.courses.map((link) => [link.course.id, qualificationPenalty(link.qualificationLevel)]),
-      ),
-      courseLevels: Object.fromEntries(instructor.courses.filter(link => link.competenceLevel != null).map(link => [link.courseId, link.competenceLevel])),
-      courseValidity: Object.fromEntries(instructor.courses.map(link => [link.courseId, [link.validFrom ? dateKey(link.validFrom) : null, link.validTo ? dateKey(link.validTo) : null]])),
-      qualificationValidity: Object.fromEntries(instructor.qualifications.map(link => [link.qualificationId, [link.validFrom ? dateKey(link.validFrom) : null, link.validTo ? dateKey(link.validTo) : null]])),
-      qualificationLevels: Object.fromEntries(
-        instructor.qualifications.filter((link) => link.qualification.active).map((link) => [
-          link.qualification.id,
-          link.level,
+        instructor.courses.map((link) => [
+          link.course.id,
+          qualificationPenalty(link.qualificationLevel),
         ]),
+      ),
+      courseQualificationLevels: Object.fromEntries(
+        instructor.courses.map((link) => [
+          link.courseId,
+          link.qualificationLevel,
+        ]),
+      ),
+      courseLevels: Object.fromEntries(
+        instructor.courses
+          .filter((link) => link.competenceLevel != null)
+          .map((link) => [link.courseId, link.competenceLevel]),
+      ),
+      courseValidity: Object.fromEntries(
+        instructor.courses.map((link) => [
+          link.courseId,
+          [
+            link.validFrom ? dateKey(link.validFrom) : null,
+            link.validTo ? dateKey(link.validTo) : null,
+          ],
+        ]),
+      ),
+      qualificationValidity: Object.fromEntries(
+        instructor.qualifications.map((link) => [
+          link.qualificationId,
+          [
+            link.validFrom ? dateKey(link.validFrom) : null,
+            link.validTo ? dateKey(link.validTo) : null,
+          ],
+        ]),
+      ),
+      qualificationLevels: Object.fromEntries(
+        instructor.qualifications
+          .filter((link) => link.qualification.active)
+          .map((link) => [link.qualification.id, link.level]),
       ),
     })),
     rooms: rooms.map((room) => ({
       id: room.id,
       name: room.name,
       capacity: room.capacity,
-      staffingRoles: room.staffingRequirements
-        .flatMap((rule) =>
-          Array.from({ length: rule.count }, (_, index) => ({
-            id: `${rule.id}:${index + 1}`,
-            role: rule.role,
-            requiredQualificationId: rule.requiredQualificationId,
-            minimumQualificationLevel: rule.minimumQualificationLevel,
-            minimumCourseLevel: rule.minimumCourseLevel,
-            preferredCourseLevel: rule.preferredCourseLevel,
-            minimumStudentCount: rule.minimumStudentCount,
-            hard: rule.hard, weight: rule.priority,
-            validFrom: rule.validFrom ? dateKey(rule.validFrom) : null,
-            validTo: rule.validTo ? dateKey(rule.validTo) : null,
-          })),
-        ),
+      staffingRoles: room.staffingRequirements.flatMap((rule) =>
+        Array.from({ length: rule.count }, (_, index) => ({
+          id: `${rule.id}:${index + 1}`,
+          role: rule.role,
+          requiredQualificationId: rule.requiredQualificationId,
+          minimumQualificationLevel: rule.minimumQualificationLevel,
+          minimumCourseQualificationLevel: rule.minimumCourseQualificationLevel,
+          minimumCourseLevel: rule.minimumCourseLevel,
+          preferredCourseLevel: rule.preferredCourseLevel,
+          minimumStudentCount: rule.minimumStudentCount,
+          hard: rule.hard,
+          weight: rule.priority,
+          validFrom: rule.validFrom ? dateKey(rule.validFrom) : null,
+          validTo: rule.validTo ? dateKey(rule.validTo) : null,
+        })),
+      ),
     })),
     teachingGroups: teachingGroups.map((group) => {
       const allowedRoomIds: string[] = [];
@@ -661,19 +776,29 @@ async function main() {
         }
 
         allowedRoomIds.push(room.id);
-        roomPenalties[room.id] =
-          requirementCost.penalty + courseRoomPenalty;
+        roomPenalties[room.id] = requirementCost.penalty + courseRoomPenalty;
       }
-      if (!allowedRoomIds.length) throw new Error(`No room meets equipment/accessibility requirements for ${group.code ?? group.id}. Required features: ${requirements.filter(r => r.hard).map(r => r.featureId).join(", ")}`);
+      if (!allowedRoomIds.length)
+        throw new Error(
+          `No room meets equipment/accessibility requirements for ${group.code ?? group.id}. Required features: ${requirements
+            .filter((r) => r.hard)
+            .map((r) => r.featureId)
+            .join(", ")}`,
+        );
 
       return {
         id: group.id,
         courseId: group.course.id,
         studentIds: group.students.map((membership) => membership.student.id),
-        durationMinutes: group.course.preferredSessionMinutes ?? group.course.minSessionMinutes ?? 45,
+        durationMinutes:
+          group.course.preferredSessionMinutes ??
+          group.course.minSessionMinutes ??
+          45,
         allowedRoomIds,
         roomPenalties,
-        instructorPenalties: Object.fromEntries(instructorPreferenceByGroup.get(group.id) ?? []),
+        instructorPenalties: Object.fromEntries(
+          instructorPreferenceByGroup.get(group.id) ?? [],
+        ),
         staffingRoles: [
           ...group.course.staffingRequirements,
           ...group.staffingRequirements,
@@ -689,12 +814,15 @@ async function main() {
               role: rule.role,
               requiredQualificationId: rule.requiredQualificationId,
               minimumQualificationLevel: rule.minimumQualificationLevel,
-            minimumCourseLevel: rule.minimumCourseLevel,
-            preferredCourseLevel: rule.preferredCourseLevel,
-            minimumStudentCount: rule.minimumStudentCount,
-            hard: rule.hard, weight: rule.priority,
-            validFrom: rule.validFrom ? dateKey(rule.validFrom) : null,
-            validTo: rule.validTo ? dateKey(rule.validTo) : null,
+              minimumCourseQualificationLevel:
+                rule.minimumCourseQualificationLevel,
+              minimumCourseLevel: rule.minimumCourseLevel,
+              preferredCourseLevel: rule.preferredCourseLevel,
+              minimumStudentCount: rule.minimumStudentCount,
+              hard: rule.hard,
+              weight: rule.priority,
+              validFrom: rule.validFrom ? dateKey(rule.validFrom) : null,
+              validTo: rule.validTo ? dateKey(rule.validTo) : null,
             })),
           ),
       };
@@ -713,7 +841,10 @@ async function main() {
       maxTeachingMinutesPerDay: loadProfile.maxTeachingMinutesPerDay,
       maxContinuousTeachingMinutes: loadProfile.maxContinuousTeachingMinutes,
       minBreakMinutes: loadProfile.minBreakMinutes ?? 0,
-      minBreakAfterDoubleMinutes: Math.max(loadProfile.minBreakMinutes ?? 0, 20),
+      minBreakAfterDoubleMinutes: Math.max(
+        loadProfile.minBreakMinutes ?? 0,
+        20,
+      ),
       maxSessionsPerDay: loadProfile.maxSessionsPerDay,
       minLunchMinutes: loadProfile.minLunchMinutes,
       lunchWindowStart: clock(11, 0),
@@ -732,7 +863,11 @@ async function main() {
     },
   };
 
-  await writeFile(args.outputPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await writeFile(
+    args.outputPath,
+    JSON.stringify(payload, null, 2) + "\n",
+    "utf8",
+  );
 
   console.log("Solver input generated");
   console.log(`Path: ${args.outputPath}`);

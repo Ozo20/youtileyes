@@ -16,10 +16,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { saveRoom, toggleRoomActive } from "@/lib/masterdata/actions";
-import {
-  createAndAssignRoomFeature,
-  saveRoomInventory,
-} from "@/lib/masterdata/preference-actions";
+import { saveRoomInventory } from "@/lib/masterdata/preference-actions";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 
 type PageProps = {
@@ -32,10 +30,7 @@ type PageProps = {
 
 export default async function RoomsPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const tenant = await prisma.tenant.findUnique({
-    where: { code: "DEMO" },
-    select: { id: true },
-  });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (
@@ -438,53 +433,10 @@ export default async function RoomsPage({ searchParams }: PageProps) {
                           </p>
                         )}
 
-                        <details className="room-feature-create-new">
-                          <summary>Create new catalogue item</summary>
-
-                          <form
-                            action={createAndAssignRoomFeature}
-                            className="master-inline-form room-feature-create-form"
-                          >
-                            <input
-                              type="hidden"
-                              name="roomId"
-                              value={selected.id}
-                            />
-
-                            <Field label="Type">
-                              <SelectInput
-                                name="type"
-                                required
-                                defaultValue="EQUIPMENT"
-                              >
-                                <option value="EQUIPMENT">Equipment</option>
-                                <option value="FEATURE">Feature</option>
-                              </SelectInput>
-                            </Field>
-
-                            <Field label="Name">
-                              <TextInput
-                                name="name"
-                                required
-                                placeholder="Projector"
-                              />
-                            </Field>
-
-                            <Field label="Quantity">
-                              <TextInput
-                                name="quantity"
-                                type="number"
-                                min={1}
-                                required
-                                defaultValue={1}
-                              />
-                            </Field>
-
-                            <Button type="submit" variant="secondary">
-                              Create and add
-                            </Button>
-                          </form>
-                        </details>
+                        <p className="master-muted">
+                          New catalogue entries are managed by institution
+                          administrators under Admin.
+                        </p>
                       </div>
                     </details>
                   </section>

@@ -23,6 +23,7 @@ def _domain_resources(payload: SolverInput):
             courses=frozenset(item.course_ids),
             course_penalties=dict(item.course_penalties),
             qualification_levels=dict(item.qualification_levels),
+            course_qualification_levels=dict(item.course_qualification_levels),
             course_levels=dict(item.course_levels),
             course_validity=dict(item.course_validity),
             qualification_validity=dict(item.qualification_validity),
@@ -41,6 +42,9 @@ def _domain_resources(payload: SolverInput):
                     role=role.role,
                     required_qualification_id=role.required_qualification_id,
                     minimum_qualification_level=role.minimum_qualification_level,
+                    minimum_course_qualification_level=(
+                        role.minimum_course_qualification_level
+                    ),
                     minimum_course_level=role.minimum_course_level,
                     preferred_course_level=role.preferred_course_level,
                     minimum_student_count=role.minimum_student_count,
@@ -68,6 +72,9 @@ def _domain_resources(payload: SolverInput):
                     role=role.role,
                     required_qualification_id=role.required_qualification_id,
                     minimum_qualification_level=role.minimum_qualification_level,
+                    minimum_course_qualification_level=(
+                        role.minimum_course_qualification_level
+                    ),
                     minimum_course_level=role.minimum_course_level,
                     preferred_course_level=role.preferred_course_level,
                     minimum_student_count=role.minimum_student_count,

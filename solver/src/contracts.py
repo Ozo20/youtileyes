@@ -11,6 +11,7 @@ class InstructorInput:
     course_ids: tuple[str, ...]
     course_penalties: dict[str, int] = field(default_factory=dict)
     qualification_levels: dict[str, int] = field(default_factory=dict)
+    course_qualification_levels: dict[str, str] = field(default_factory=dict)
     course_levels: dict[str, int] = field(default_factory=dict)
     course_validity: dict[str, list[str | None]] = field(default_factory=dict)
     qualification_validity: dict[str, list[str | None]] = field(default_factory=dict)
@@ -22,6 +23,7 @@ class StaffingRoleInput:
     role: str
     required_qualification_id: str | None = None
     minimum_qualification_level: int | None = None
+    minimum_course_qualification_level: str | None = None
     minimum_course_level: int | None = None
     preferred_course_level: int | None = None
     minimum_student_count: int = 0

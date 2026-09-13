@@ -906,3 +906,143 @@ textarea.master-input,
     grid-template-columns: 1fr;
   }
 }
+
+.course-competence-section {
+  gap: 16px;
+}
+
+.course-competence-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.course-competence-item:last-child {
+  border-bottom: 0;
+}
+
+.course-competence-item[data-inactive="true"] {
+  opacity: 0.62;
+}
+
+.course-competence-summary {
+  min-width: 0;
+}
+
+.course-competence-summary strong,
+.course-competence-summary span {
+  display: block;
+}
+
+.course-competence-summary span {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.course-competence-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.course-competence-editor {
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.course-competence-editor-header {
+  margin-bottom: 12px;
+}
+
+.course-competence-editor-header strong,
+.course-competence-editor-header span {
+  display: block;
+}
+
+.course-competence-editor-header span {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.course-competence-form {
+  grid-template-columns:
+    minmax(170px, 1.4fr)
+    minmax(120px, 0.8fr)
+    100px
+    minmax(130px, 0.9fr)
+    auto;
+}
+
+.course-competence-edit-form {
+  grid-template-columns:
+    minmax(120px, 0.8fr)
+    100px
+    minmax(130px, 0.9fr)
+    minmax(120px, 0.8fr)
+    minmax(125px, 0.8fr)
+    minmax(125px, 0.8fr)
+    auto;
+}
+
+.course-competence-form-actions {
+  display: flex;
+  align-items: end;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.course-competence-all-assigned {
+  margin-top: 4px;
+}
+
+@media (max-width: 1000px) {
+  .course-competence-form,
+  .course-competence-edit-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .course-competence-form-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .course-competence-form,
+  .course-competence-edit-form {
+    grid-template-columns: 1fr;
+  }
+
+  .course-competence-row-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+.admin-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.text-link {
+  display: inline-flex;
+  margin-top: 10px;
+  font-weight: 650;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.text-link:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 900px) {
+  .admin-card-grid {
+    grid-template-columns: 1fr;
+  }
+}

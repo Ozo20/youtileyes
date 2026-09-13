@@ -20,6 +20,7 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -30,11 +31,7 @@ const dateFormatter = new Intl.DateTimeFormat("en-GB", {
 });
 
 export default async function HomePage() {
-  const tenant = await prisma.tenant.findUnique({
-    where: {
-      code: "DEMO",
-    },
-  });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (

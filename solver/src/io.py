@@ -177,6 +177,10 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
             course_ids=tuple(str(value) for value in item["courseIds"]),
             course_penalties=_int_map(item.get("coursePenalties")),
             qualification_levels=_int_map(item.get("qualificationLevels")),
+            course_qualification_levels={
+                str(key): str(value)
+                for key, value in item.get("courseQualificationLevels", {}).items()
+            },
             course_levels=_int_map(item.get("courseLevels")),
             course_validity=dict(item.get("courseValidity", {})),
             qualification_validity=dict(item.get("qualificationValidity", {})),
@@ -208,6 +212,11 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
                     minimum_qualification_level=(
                         int(role["minimumQualificationLevel"])
                         if role.get("minimumQualificationLevel") is not None
+                        else None
+                    ),
+                    minimum_course_qualification_level=(
+                        str(role["minimumCourseQualificationLevel"])
+                        if role.get("minimumCourseQualificationLevel") is not None
                         else None
                     ),
                 )
@@ -245,6 +254,11 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
                     minimum_qualification_level=(
                         int(role["minimumQualificationLevel"])
                         if role.get("minimumQualificationLevel") is not None
+                        else None
+                    ),
+                    minimum_course_qualification_level=(
+                        str(role["minimumCourseQualificationLevel"])
+                        if role.get("minimumCourseQualificationLevel") is not None
                         else None
                     ),
                 )

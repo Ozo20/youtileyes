@@ -11,12 +11,9 @@ import {
   StudentCohortType,
 } from "../../generated/prisma/client";
 
+import { requireTenantRole } from "@/lib/access/tenant-context";
 import { writeAuditEvent } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-
-const DEMO_ACTOR = {
-  name: "Ola Solem",
-};
 
 function requiredText(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -55,20 +52,8 @@ function checked(formData: FormData, key: string) {
   return formData.get(key) === "on";
 }
 
-async function demoTenant() {
-  const tenant = await prisma.tenant.findUnique({
-    where: { code: "DEMO" },
-    select: {
-      id: true,
-      name: true,
-    },
-  });
-
-  if (!tenant) {
-    throw new Error("Demo tenant was not found.");
-  }
-
-  return tenant;
+async function mutationContext() {
+  return requireTenantRole("PLANNER");
 }
 
 function refreshAndRedirect(path: string) {
@@ -82,7 +67,7 @@ function refreshAndRedirect(path: string) {
 }
 
 export async function saveStudent(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -138,7 +123,7 @@ export async function saveStudent(formData: FormData) {
         eventType: "UPDATED",
         entityType: "Student",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Student updated: ${after.firstName} ${after.lastName}.`,
         source: "masterdata.students",
         correlationId,
@@ -167,7 +152,7 @@ export async function saveStudent(formData: FormData) {
       eventType: "CREATED",
       entityType: "Student",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Student created: ${after.firstName} ${after.lastName}.`,
       source: "masterdata.students",
       correlationId,
@@ -181,7 +166,7 @@ export async function saveStudent(formData: FormData) {
 }
 
 export async function toggleStudentStatus(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const nextStatus =
     requiredText(formData, "nextStatus") === "ACTIVE"
@@ -214,7 +199,7 @@ export async function toggleStudentStatus(formData: FormData) {
           : "DEACTIVATED",
       entityType: "Student",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         nextStatus === PersonStatus.ACTIVE
           ? `Student reactivated: ${after.firstName} ${after.lastName}.`
@@ -230,7 +215,7 @@ export async function toggleStudentStatus(formData: FormData) {
 }
 
 export async function saveCohort(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -285,7 +270,7 @@ export async function saveCohort(formData: FormData) {
         eventType: "UPDATED",
         entityType: "StudentCohort",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Cohort updated: ${after.code ?? "—"} · ${after.name}.`,
         source: "masterdata.cohorts",
         correlationId,
@@ -313,7 +298,7 @@ export async function saveCohort(formData: FormData) {
       eventType: "CREATED",
       entityType: "StudentCohort",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Cohort created: ${after.code ?? "—"} · ${after.name}.`,
       source: "masterdata.cohorts",
       correlationId,
@@ -327,7 +312,7 @@ export async function saveCohort(formData: FormData) {
 }
 
 export async function toggleCohortActive(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
   const correlationId = randomUUID();
@@ -354,7 +339,7 @@ export async function toggleCohortActive(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "StudentCohort",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: active
         ? `Cohort reactivated: ${after.code ?? "—"} · ${after.name}.`
         : `Cohort deactivated: ${after.code ?? "—"} · ${after.name}.`,
@@ -369,7 +354,7 @@ export async function toggleCohortActive(formData: FormData) {
 }
 
 export async function addStudentToCohort(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const studentCohortId = requiredText(
     formData,
     "studentCohortId",
@@ -434,7 +419,7 @@ export async function addStudentToCohort(formData: FormData) {
       eventType: "CREATED",
       entityType: "StudentCohortMember",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         `${student.firstName} ${student.lastName} added to cohort ` +
         `${cohort.code ?? "—"} · ${cohort.name}.`,
@@ -454,7 +439,7 @@ export async function addStudentToCohort(formData: FormData) {
 export async function removeStudentFromCohort(
   formData: FormData,
 ) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const membershipId = requiredText(formData, "membershipId");
   const returnPath = requiredText(formData, "returnPath");
   const correlationId = randomUUID();
@@ -486,7 +471,7 @@ export async function removeStudentFromCohort(
       eventType: "DEACTIVATED",
       entityType: "StudentCohortMember",
       entityId: membershipId,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         `${before.student.firstName} ${before.student.lastName} removed from cohort ` +
         `${before.studentCohort.code ?? "—"} · ${before.studentCohort.name}.`,
@@ -504,7 +489,7 @@ export async function removeStudentFromCohort(
 }
 
 export async function saveLocation(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -571,7 +556,7 @@ export async function saveLocation(formData: FormData) {
         eventType: "UPDATED",
         entityType: "Location",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Location updated: ${after.code ?? "—"} · ${after.name}.`,
         source: "masterdata.locations",
         correlationId,
@@ -606,7 +591,7 @@ export async function saveLocation(formData: FormData) {
       eventType: "CREATED",
       entityType: "Location",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Location created: ${after.code ?? "—"} · ${after.name}.`,
       source: "masterdata.locations",
       correlationId,
@@ -620,7 +605,7 @@ export async function saveLocation(formData: FormData) {
 }
 
 export async function toggleLocationActive(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
   const correlationId = randomUUID();
@@ -647,7 +632,7 @@ export async function toggleLocationActive(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "Location",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: active
         ? `Location reactivated: ${after.code ?? "—"} · ${after.name}.`
         : `Location deactivated: ${after.code ?? "—"} · ${after.name}.`,

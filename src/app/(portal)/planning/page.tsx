@@ -37,6 +37,7 @@ import {
   jsonRecord,
 } from "@/lib/planning/workspace-data";
 import { generateBasePlanScenario } from "@/lib/planning/base-plan-solver-actions";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 import { getPlanRevisionHistory } from "@/lib/planning/revision-history";
 
@@ -140,11 +141,7 @@ export default async function PlanningPage({
 }: PageProps) {
   const params = await searchParams;
 
-  const tenant = await prisma.tenant.findUnique({
-    where: {
-      code: "DEMO",
-    },
-  });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (

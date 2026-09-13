@@ -38,10 +38,8 @@ export function InstructorQualifications({
     <section className="master-subsection">
       <div className="master-subsection-header">
         <div>
-          <span className="eyebrow">
-            Competence
-          </span>
-          <h3>Qualifications</h3>
+          <span className="eyebrow">Formal credentials</span>
+          <h3>Formal qualifications</h3>
         </div>
 
         <Badge tone="info">
@@ -51,9 +49,7 @@ export function InstructorQualifications({
 
       <div className="qualification-assignment-list">
         {assigned.length === 0 ? (
-          <p className="master-muted">
-            No qualifications assigned yet.
-          </p>
+          <p className="master-muted">No formal qualifications assigned yet.</p>
         ) : (
           assigned.map((item) => (
             <div
@@ -62,35 +58,22 @@ export function InstructorQualifications({
               data-inactive={!item.active}
             >
               <div>
-                <strong>
-                  {item.qualification.code}
-                </strong>
+                <strong>{item.qualification.code}</strong>
                 <span>
                   {item.qualification.name} · level {item.level}
                 </span>
               </div>
 
               <form action={toggleInstructorQualification}>
-                <input
-                  type="hidden"
-                  name="id"
-                  value={item.id}
-                />
-                <input
-                  type="hidden"
-                  name="instructorId"
-                  value={instructorId}
-                />
+                <input type="hidden" name="id" value={item.id} />
+                <input type="hidden" name="instructorId" value={instructorId} />
                 <input
                   type="hidden"
                   name="active"
                   value={String(!item.active)}
                 />
 
-                <Button
-                  type="submit"
-                  variant="ghost"
-                >
+                <Button type="submit" variant="ghost">
                   {item.active ? "Deactivate" : "Reactivate"}
                 </Button>
               </form>
@@ -103,26 +86,15 @@ export function InstructorQualifications({
         action={assignInstructorQualification}
         className="master-inline-form qualification-create-form"
       >
-        <input
-          type="hidden"
-          name="instructorId"
-          value={instructorId}
-        />
+        <input type="hidden" name="instructorId" value={instructorId} />
 
-        <Field label="Qualification">
-          <SelectInput
-            name="qualificationId"
-            required
-            defaultValue=""
-          >
+        <Field label="Formal qualification">
+          <SelectInput name="qualificationId" required defaultValue="">
             <option value="" disabled>
-              Select qualification
+              Select formal qualification
             </option>
             {available.map((qualification) => (
-              <option
-                key={qualification.id}
-                value={qualification.id}
-              >
+              <option key={qualification.id} value={qualification.id}>
                 {qualification.code} · {qualification.name}
               </option>
             ))}
@@ -130,18 +102,10 @@ export function InstructorQualifications({
         </Field>
 
         <Field label="Level">
-          <TextInput
-            name="level"
-            type="number"
-            min={1}
-            defaultValue={1}
-          />
+          <TextInput name="level" type="number" min={1} defaultValue={1} />
         </Field>
 
-        <Button
-          type="submit"
-          variant="secondary"
-        >
+        <Button type="submit" variant="secondary">
           Assign / update
         </Button>
       </form>

@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { connection } from "next/server";
+import { getTenantContext, roleAtLeast } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -12,7 +14,6 @@ import {
   saveCourseCompetence,
   saveTimePreference,
   saveBreakPreference,
-  saveRoomFeature,
   saveRoomInventory,
   saveRoomRequirement,
   togglePreference,
@@ -87,7 +88,8 @@ const clock = (minute: number | null) =>
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 export default async function PreferencesPage() {
   await connection();
-  const tenant = await prisma.tenant.findUnique({ where: { code: "DEMO" } });
+  const context = await getTenantContext();
+  const { tenant } = context;
   if (!tenant)
     return (
       <PageHeader
@@ -439,25 +441,15 @@ export default async function PreferencesPage() {
         </CardHeader>
         <CardContent>
           <p>
-            Create specific features such as projector, lab station, step-free
-            access or hearing loop. Use quantity 1 for a feature that is
-            present, and 0 to remove it.
+            Assign institution-defined equipment and features to rooms. Use
+            quantity 1 for a feature that is present, and 0 to remove it.
+            {roleAtLeast(context.role, "ADMIN") ? (
+              <>
+                {" "}
+                <Link href="/admin/room-features">Manage the catalogue in Admin.</Link>
+              </>
+            ) : null}
           </p>
-          <form action={saveRoomFeature} className="master-inline-form">
-            <Field label="Type">
-              <Select
-                name="type"
-                options={[
-                  { id: "EQUIPMENT", name: "Equipment" },
-                  { id: "FEATURE", name: "Feature" },
-                ]}
-              />
-            </Field>
-            <Field label="Name">
-              <TextInput name="name" required placeholder="Projector" />
-            </Field>
-            <Button type="submit">Create</Button>
-          </form>
           <form action={saveRoomInventory} className="master-inline-form">
             <Field label="Room">
               <Select name="roomId" options={rooms} />

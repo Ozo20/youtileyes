@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { requireInstitutionAdmin, requireTenantRole } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 import { writeAuditEvent } from "@/lib/audit";
 import type { Prisma } from "@/generated/prisma/client";
@@ -37,9 +38,7 @@ function minute(data: FormData, key: string) {
   return hour * 60 + minute;
 }
 async function tenantId() {
-  // Same demo tenant boundary as existing master-data actions; replace with session tenant when auth is introduced.
-  return (await prisma.tenant.findUniqueOrThrow({ where: { code: "DEMO" } }))
-    .id;
+  return (await requireTenantRole("PLANNER")).tenant.id;
 }
 async function requireEntity(
   tx: Prisma.TransactionClient,
@@ -72,12 +71,14 @@ async function audit(
   entityType: string,
   after: { id: string },
   before?: unknown,
+  actor?: { id?: string | null; name?: string | null },
 ) {
   await writeAuditEvent(tx, {
     tenantId,
     eventType: before ? "UPDATED" : "CREATED",
     entityType,
     entityId: after.id,
+    actor,
     source: "masterdata.preferences",
     description: `${entityType} saved`,
     beforeState: before,
@@ -89,6 +90,7 @@ function refresh() {
   revalidatePath("/instructors");
   revalidatePath("/courses");
   revalidatePath("/rooms");
+  revalidatePath("/admin/room-features");
 }
 
 export async function saveCourseCompetence(data: FormData) {
@@ -96,6 +98,17 @@ export async function saveCourseCompetence(data: FormData) {
   const instructorId = text(data, "instructorId"),
     courseId = text(data, "courseId");
   const competenceLevel = integer(data, "competenceLevel", 1, 100);
+
+  const qualificationLevelRaw = data.get("qualificationLevel");
+  if (
+    typeof qualificationLevelRaw !== "string" ||
+    !["PRIMARY", "SECONDARY", "SUPPORT"].includes(qualificationLevelRaw)
+  ) {
+    throw new Error("Invalid qualification level");
+  }
+
+  const qualificationLevel = qualificationLevelRaw as
+    "PRIMARY" | "SECONDARY" | "SUPPORT";
 
   const preferenceRaw = data.get("preference");
   if (
@@ -126,6 +139,7 @@ export async function saveCourseCompetence(data: FormData) {
         instructorId,
         courseId,
         competenceLevel,
+        qualificationLevel,
         preference,
         preferenceWeight,
         validFrom,
@@ -133,6 +147,7 @@ export async function saveCourseCompetence(data: FormData) {
       },
       update: {
         competenceLevel,
+        qualificationLevel,
         preference,
         preferenceWeight,
         validFrom,
@@ -310,10 +325,7 @@ export async function saveBreakPreference(data: FormData) {
   refresh();
 }
 
-function roomFeatureCodeBase(
-  type: "EQUIPMENT" | "FEATURE",
-  name: string,
-) {
+function roomFeatureCodeBase(type: "EQUIPMENT" | "FEATURE", name: string) {
   const normalized = name
     .toUpperCase()
     .replaceAll("Æ", "AE")
@@ -357,7 +369,8 @@ async function generateRoomFeatureCode(
 }
 
 export async function saveRoomFeature(data: FormData) {
-  const tid = await tenantId();
+  const { tenant, actor } = await requireInstitutionAdmin();
+  const tid = tenant.id;
   const name = text(data, "name");
   const type = text(data, "type");
 
@@ -392,7 +405,7 @@ export async function saveRoomFeature(data: FormData) {
       },
     });
 
-    await audit(tx, tid, "RoomFeature", after);
+    await audit(tx, tid, "RoomFeature", after, undefined, actor);
   });
 
   refresh();
@@ -456,7 +469,8 @@ export async function saveRoomInventory(data: FormData) {
   refresh();
 }
 export async function createAndAssignRoomFeature(data: FormData) {
-  const tid = await tenantId();
+  const { tenant, actor } = await requireInstitutionAdmin();
+  const tid = tenant.id;
   const roomId = text(data, "roomId");
   const name = text(data, "name");
   const type = text(data, "type");
@@ -496,7 +510,7 @@ export async function createAndAssignRoomFeature(data: FormData) {
         },
       });
 
-      await audit(tx, tid, "RoomFeature", feature);
+      await audit(tx, tid, "RoomFeature", feature, undefined, actor);
     }
 
     const where = {

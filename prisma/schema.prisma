@@ -17,6 +17,13 @@ enum TenantStatus {
   ARCHIVED
 }
 
+enum TenantRole {
+  ADMIN
+  PLANNER
+  MEMBER
+  VIEWER
+}
+
 enum OrganisationUnitType {
   UNIVERSITY
   FACULTY
@@ -172,6 +179,7 @@ model Tenant {
   roomFeatures             RoomFeature[]
   roomFeatureValues        RoomFeatureValue[]
   roomRequirements         RoomRequirement[]
+  memberships              TenantMembership[]
   id                       String             @id @default(uuid())
   name                     String
   code                     String             @unique
@@ -246,6 +254,37 @@ model Tenant {
   planDistributions           PlanDistribution[]
 
   @@index([status])
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships TenantMembership[]
+
+  @@index([active])
+  @@index([name])
+}
+
+model TenantMembership {
+  id        String     @id @default(uuid())
+  tenantId  String
+  userId    String
+  role      TenantRole @default(MEMBER)
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([tenantId, role, active])
+  @@index([userId, active])
 }
 
 model OrganisationUnit {
@@ -780,26 +819,27 @@ model InstructorQualification {
 }
 
 model StaffingRequirement {
-  id                        String                    @id @default(uuid())
-  tenantId                  String
-  source                    StaffingRequirementSource
-  courseId                  String?
-  teachingGroupId           String?
-  roomId                    String?
-  role                      StaffingRoleType
-  count                     Int                       @default(1)
-  requiredQualificationId   String?
-  minimumCourseLevel        Int?
-  preferredCourseLevel      Int?
-  minimumQualificationLevel Int?
-  minimumStudentCount       Int?
-  priority                  Int                       @default(100)
-  hard                      Boolean                   @default(true)
-  active                    Boolean                   @default(true)
-  validFrom                 DateTime?
-  validTo                   DateTime?
-  createdAt                 DateTime                  @default(now())
-  updatedAt                 DateTime                  @updatedAt
+  id                              String                    @id @default(uuid())
+  tenantId                        String
+  source                          StaffingRequirementSource
+  courseId                        String?
+  teachingGroupId                 String?
+  roomId                          String?
+  role                            StaffingRoleType
+  count                           Int                       @default(1)
+  requiredQualificationId         String?
+  minimumCourseQualificationLevel QualificationLevel?
+  minimumCourseLevel              Int?
+  preferredCourseLevel            Int?
+  minimumQualificationLevel       Int?
+  minimumStudentCount             Int?
+  priority                        Int                       @default(100)
+  hard                            Boolean                   @default(true)
+  active                          Boolean                   @default(true)
+  validFrom                       DateTime?
+  validTo                         DateTime?
+  createdAt                       DateTime                  @default(now())
+  updatedAt                       DateTime                  @updatedAt
 
   tenant                Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   course                Course?        @relation(fields: [courseId], references: [id], onDelete: Cascade)

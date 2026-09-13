@@ -4,11 +4,12 @@ import { ArrowLeft } from "lucide-react";
 import { PlanRevisionTimeline } from "@/components/planning/plan-revision-timeline";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 import { getPlanRevisionHistory } from "@/lib/planning/revision-history";
 
 export default async function PlanRevisionsPage() {
-  const tenant = await prisma.tenant.findUnique({ where: { code: "DEMO" } });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (

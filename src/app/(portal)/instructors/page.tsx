@@ -9,22 +9,20 @@ import {
   SelectInput,
   TextInput,
 } from "@/components/masterdata/form-field";
+import { InstructorCourseCompetence } from "@/components/masterdata/instructor-course-competence";
 import { InstructorQualifications } from "@/components/masterdata/instructor-qualifications";
 import { MasterDataList } from "@/components/masterdata/master-data-list";
 import { MasterDataToolbar } from "@/components/masterdata/master-data-toolbar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import {
   saveInstructor,
   toggleInstructorStatus,
 } from "@/lib/masterdata/actions";
+import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
 
 type PageProps = {
@@ -41,14 +39,9 @@ function statusTone(status: PersonStatus) {
   return "neutral" as const;
 }
 
-export default async function InstructorsPage({
-  searchParams,
-}: PageProps) {
+export default async function InstructorsPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const tenant = await prisma.tenant.findUnique({
-    where: { code: "DEMO" },
-    select: { id: true, name: true },
-  });
+  const { tenant } = await getTenantContext();
 
   if (!tenant) {
     return (
@@ -88,6 +81,14 @@ export default async function InstructorsPage({
     },
     include: {
       primaryLocation: true,
+      courses: {
+        include: {
+          course: true,
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
       qualifications: {
         include: {
           qualification: true,
@@ -103,14 +104,10 @@ export default async function InstructorsPage({
         },
       },
     },
-    orderBy: [
-      { status: "asc" },
-      { lastName: "asc" },
-      { firstName: "asc" },
-    ],
+    orderBy: [{ status: "asc" }, { lastName: "asc" }, { firstName: "asc" }],
   });
 
-  const [locations, qualifications] = await Promise.all([
+  const [locations, qualifications, courses] = await Promise.all([
     prisma.location.findMany({
       where: {
         tenantId: tenant.id,
@@ -125,15 +122,24 @@ export default async function InstructorsPage({
         tenantId: tenant.id,
         active: true,
       },
-      orderBy: [
-        { code: "asc" },
-        { name: "asc" },
-      ],
+      orderBy: [{ code: "asc" }, { name: "asc" }],
+    }),
+    prisma.course.findMany({
+      where: {
+        tenantId: tenant.id,
+        active: true,
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+      },
+      orderBy: [{ code: "asc" }, { name: "asc" }],
     }),
   ]);
 
   const selected = params.id
-    ? instructors.find((item) => item.id === params.id) ??
+    ? (instructors.find((item) => item.id === params.id) ??
       (await prisma.instructor.findFirst({
         where: {
           id: params.id,
@@ -141,6 +147,14 @@ export default async function InstructorsPage({
         },
         include: {
           primaryLocation: true,
+          courses: {
+            include: {
+              course: true,
+            },
+            orderBy: {
+              createdAt: "asc",
+            },
+          },
           qualifications: {
             include: {
               qualification: true,
@@ -156,7 +170,7 @@ export default async function InstructorsPage({
             },
           },
         },
-      }))
+      })))
     : null;
 
   const creating = params.new === "1";
@@ -166,11 +180,7 @@ export default async function InstructorsPage({
       <PageHeader
         title="Instructors"
         description="Teaching capacity, qualifications and operational availability."
-        actions={
-          <Badge tone="info">
-            {instructors.length} instructors
-          </Badge>
-        }
+        actions={<Badge tone="info">{instructors.length} instructors</Badge>}
       />
 
       <MasterDataToolbar
@@ -221,25 +231,15 @@ export default async function InstructorsPage({
                 </h2>
               </div>
 
-              <Link
-                href="/instructors"
-                className="master-close"
-              >
+              <Link href="/instructors" className="master-close">
                 Close
               </Link>
             </CardHeader>
 
             <CardContent>
-              <form
-                action={saveInstructor}
-                className="master-form"
-              >
+              <form action={saveInstructor} className="master-form">
                 {selected ? (
-                  <input
-                    type="hidden"
-                    name="id"
-                    value={selected.id}
-                  />
+                  <input type="hidden" name="id" value={selected.id} />
                 ) : null}
 
                 <div className="master-form-grid">
@@ -269,9 +269,7 @@ export default async function InstructorsPage({
                   <Field label="Status">
                     <SelectInput
                       name="status"
-                      defaultValue={
-                        selected?.status ?? PersonStatus.ACTIVE
-                      }
+                      defaultValue={selected?.status ?? PersonStatus.ACTIVE}
                     >
                       {Object.values(PersonStatus).map((status) => (
                         <option key={status} value={status}>
@@ -284,18 +282,11 @@ export default async function InstructorsPage({
                   <Field label="Primary location">
                     <SelectInput
                       name="primaryLocationId"
-                      defaultValue={
-                        selected?.primaryLocationId ?? ""
-                      }
+                      defaultValue={selected?.primaryLocationId ?? ""}
                     >
-                      <option value="">
-                        No primary location
-                      </option>
+                      <option value="">No primary location</option>
                       {locations.map((location) => (
-                        <option
-                          key={location.id}
-                          value={location.id}
-                        >
+                        <option key={location.id} value={location.id}>
                           {location.name}
                         </option>
                       ))}
@@ -310,9 +301,7 @@ export default async function InstructorsPage({
                       name="maxTeachingMinutesPerWeek"
                       type="number"
                       min={0}
-                      defaultValue={
-                        selected?.maxTeachingMinutesPerWeek ?? ""
-                      }
+                      defaultValue={selected?.maxTeachingMinutesPerWeek ?? ""}
                     />
                   </Field>
                 </div>
@@ -326,6 +315,12 @@ export default async function InstructorsPage({
 
               {selected ? (
                 <>
+                  <InstructorCourseCompetence
+                    instructorId={selected.id}
+                    assigned={selected.courses}
+                    courses={courses}
+                  />
+
                   <InstructorQualifications
                     instructorId={selected.id}
                     assigned={selected.qualifications}
@@ -334,9 +329,7 @@ export default async function InstructorsPage({
 
                   <section className="master-subsection master-danger-zone">
                     <div>
-                      <span className="eyebrow">
-                        Lifecycle
-                      </span>
+                      <span className="eyebrow">Lifecycle</span>
                       <h3>
                         {selected.status === PersonStatus.ACTIVE
                           ? "Deactivate instructor"
@@ -348,11 +341,7 @@ export default async function InstructorsPage({
                     </div>
 
                     <form action={toggleInstructorStatus}>
-                      <input
-                        type="hidden"
-                        name="id"
-                        value={selected.id}
-                      />
+                      <input type="hidden" name="id" value={selected.id} />
                       <input
                         type="hidden"
                         name="nextStatus"

@@ -13,12 +13,9 @@ import {
 } from "../../generated/prisma/client";
 import type { Prisma } from "../../generated/prisma/client";
 
+import { requireInstitutionAdmin, requireTenantRole } from "@/lib/access/tenant-context";
 import { writeAuditEvent } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-
-const DEMO_ACTOR = {
-  name: "Ola Solem",
-};
 
 function requiredText(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -67,20 +64,8 @@ function checked(formData: FormData, key: string) {
   return formData.get(key) === "on";
 }
 
-async function demoTenant() {
-  const tenant = await prisma.tenant.findUnique({
-    where: { code: "DEMO" },
-    select: {
-      id: true,
-      name: true,
-    },
-  });
-
-  if (!tenant) {
-    throw new Error("Demo tenant was not found.");
-  }
-
-  return tenant;
+async function mutationContext() {
+  return requireTenantRole("PLANNER");
 }
 
 function refreshAndRedirect(path: string) {
@@ -91,7 +76,7 @@ function refreshAndRedirect(path: string) {
 }
 
 export async function saveInstructor(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -141,7 +126,7 @@ export async function saveInstructor(formData: FormData) {
         eventType: "UPDATED",
         entityType: "Instructor",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Instructor updated: ${after.firstName} ${after.lastName}.`,
         source: "masterdata.instructors",
         correlationId,
@@ -169,7 +154,7 @@ export async function saveInstructor(formData: FormData) {
       eventType: "CREATED",
       entityType: "Instructor",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Instructor created: ${after.firstName} ${after.lastName}.`,
       source: "masterdata.instructors",
       correlationId,
@@ -183,7 +168,7 @@ export async function saveInstructor(formData: FormData) {
 }
 
 export async function toggleInstructorStatus(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const nextStatus =
     requiredText(formData, "nextStatus") === "ACTIVE"
@@ -214,7 +199,7 @@ export async function toggleInstructorStatus(formData: FormData) {
         nextStatus === PersonStatus.ACTIVE ? "REACTIVATED" : "DEACTIVATED",
       entityType: "Instructor",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         nextStatus === PersonStatus.ACTIVE
           ? `Instructor reactivated: ${after.firstName} ${after.lastName}.`
@@ -230,7 +215,7 @@ export async function toggleInstructorStatus(formData: FormData) {
 }
 
 export async function saveQualification(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await requireInstitutionAdmin();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -267,7 +252,7 @@ export async function saveQualification(formData: FormData) {
         eventType: "UPDATED",
         entityType: "Qualification",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Qualification updated: ${after.code} · ${after.name}.`,
         source: "masterdata.qualifications",
         correlationId,
@@ -293,7 +278,7 @@ export async function saveQualification(formData: FormData) {
       eventType: "CREATED",
       entityType: "Qualification",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Qualification created: ${after.code} · ${after.name}.`,
       source: "masterdata.qualifications",
       correlationId,
@@ -303,11 +288,11 @@ export async function saveQualification(formData: FormData) {
     return after;
   });
 
-  refreshAndRedirect(`/qualifications?id=${saved.id}`);
+  refreshAndRedirect(`/admin/qualifications?id=${saved.id}`);
 }
 
 export async function toggleQualificationActive(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await requireInstitutionAdmin();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
   const correlationId = randomUUID();
@@ -334,7 +319,7 @@ export async function toggleQualificationActive(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "Qualification",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: active
         ? `Qualification reactivated: ${after.code} · ${after.name}.`
         : `Qualification deactivated: ${after.code} · ${after.name}.`,
@@ -345,11 +330,11 @@ export async function toggleQualificationActive(formData: FormData) {
     });
   });
 
-  refreshAndRedirect(`/qualifications?id=${id}`);
+  refreshAndRedirect(`/admin/qualifications?id=${id}`);
 }
 
 export async function assignInstructorQualification(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const instructorId = requiredText(formData, "instructorId");
   const qualificationId = requiredText(formData, "qualificationId");
   const level = positiveInt(formData, "level");
@@ -420,7 +405,7 @@ export async function assignInstructorQualification(formData: FormData) {
       eventType: before ? "UPDATED" : "CREATED",
       entityType: "InstructorQualification",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         `${qualification.code} level ${level} assigned to ` +
         `${instructor.firstName} ${instructor.lastName}.`,
@@ -439,7 +424,7 @@ export async function assignInstructorQualification(formData: FormData) {
 }
 
 export async function toggleInstructorQualification(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const instructorId = requiredText(formData, "instructorId");
   const active = requiredText(formData, "active") === "true";
@@ -471,7 +456,7 @@ export async function toggleInstructorQualification(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "InstructorQualification",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         `${before.qualification.code} ${active ? "reactivated" : "deactivated"} ` +
         `for ${before.instructor.firstName} ${before.instructor.lastName}.`,
@@ -490,7 +475,7 @@ export async function toggleInstructorQualification(formData: FormData) {
 }
 
 export async function saveCourse(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -543,7 +528,7 @@ export async function saveCourse(formData: FormData) {
         eventType: "UPDATED",
         entityType: "Course",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Course updated: ${after.code ?? "—"} · ${after.name}.`,
         source: "masterdata.courses",
         correlationId,
@@ -566,7 +551,7 @@ export async function saveCourse(formData: FormData) {
       eventType: "CREATED",
       entityType: "Course",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Course created: ${after.code ?? "—"} · ${after.name}.`,
       source: "masterdata.courses",
       correlationId,
@@ -580,7 +565,7 @@ export async function saveCourse(formData: FormData) {
 }
 
 export async function toggleCourseActive(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
   const correlationId = randomUUID();
@@ -607,7 +592,7 @@ export async function toggleCourseActive(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "Course",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: active
         ? `Course reactivated: ${after.code ?? "—"} · ${after.name}.`
         : `Course deactivated: ${after.code ?? "—"} · ${after.name}.`,
@@ -671,7 +656,7 @@ async function generateRoomCode(
 }
 
 export async function saveRoom(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
@@ -724,7 +709,7 @@ export async function saveRoom(formData: FormData) {
         eventType: "UPDATED",
         entityType: "Room",
         entityId: after.id,
-        actor: DEMO_ACTOR,
+        actor,
         description: `Room updated: ${after.code ?? "—"} · ${after.name}.`,
         source: "masterdata.rooms",
         correlationId,
@@ -759,7 +744,7 @@ export async function saveRoom(formData: FormData) {
       eventType: "CREATED",
       entityType: "Room",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: `Room created: ${after.code ?? "—"} · ${after.name}.`,
       source: "masterdata.rooms",
       correlationId,
@@ -773,7 +758,7 @@ export async function saveRoom(formData: FormData) {
 }
 
 export async function toggleRoomActive(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
   const correlationId = randomUUID();
@@ -800,7 +785,7 @@ export async function toggleRoomActive(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "Room",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description: active
         ? `Room reactivated: ${after.code ?? "—"} · ${after.name}.`
         : `Room deactivated: ${after.code ?? "—"} · ${after.name}.`,
@@ -815,7 +800,7 @@ export async function toggleRoomActive(formData: FormData) {
 }
 
 export async function createStaffingRequirement(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const sourceValue = requiredText(formData, "source");
 
   if (
@@ -852,6 +837,24 @@ export async function createStaffingRequirement(formData: FormData) {
     formData,
     "requiredQualificationId",
   );
+
+  const minimumCourseQualificationLevelRaw = optionalText(
+    formData,
+    "minimumCourseQualificationLevel",
+  );
+
+  if (
+    minimumCourseQualificationLevelRaw !== null &&
+    !["PRIMARY", "SECONDARY", "SUPPORT"].includes(
+      minimumCourseQualificationLevelRaw,
+    )
+  ) {
+    throw new Error("Invalid minimum subject role.");
+  }
+
+  const minimumCourseQualificationLevel = minimumCourseQualificationLevelRaw as
+    "PRIMARY" | "SECONDARY" | "SUPPORT" | null;
+
   const count = positiveInt(formData, "count");
   const minimumCourseLevel = optionalInt(formData, "minimumCourseLevel");
   const preferredCourseLevel = optionalInt(formData, "preferredCourseLevel");
@@ -888,6 +891,7 @@ export async function createStaffingRequirement(formData: FormData) {
         count,
         requiredQualificationId,
         minimumQualificationLevel,
+        minimumCourseQualificationLevel,
         minimumCourseLevel,
         preferredCourseLevel,
         minimumStudentCount,
@@ -904,9 +908,12 @@ export async function createStaffingRequirement(formData: FormData) {
       eventType: "CREATED",
       entityType: "StaffingRequirement",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         `${source} staffing rule created: ${count} × ${role}` +
+        (minimumCourseQualificationLevel
+          ? ` · subject role >= ${minimumCourseQualificationLevel}`
+          : "") +
         (after.requiredQualification
           ? ` · ${after.requiredQualification.code} >= ${minimumQualificationLevel ?? 1}`
           : ""),
@@ -936,7 +943,7 @@ export async function createStaffingRequirement(formData: FormData) {
 }
 
 export async function toggleStaffingRequirement(formData: FormData) {
-  const tenant = await demoTenant();
+  const { tenant, actor } = await mutationContext();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
   const returnPath = requiredText(formData, "returnPath");
@@ -967,7 +974,7 @@ export async function toggleStaffingRequirement(formData: FormData) {
       eventType: active ? "REACTIVATED" : "DEACTIVATED",
       entityType: "StaffingRequirement",
       entityId: after.id,
-      actor: DEMO_ACTOR,
+      actor,
       description:
         `${before.source} staffing rule ${active ? "reactivated" : "deactivated"}: ` +
         `${before.count} × ${before.role}.`,

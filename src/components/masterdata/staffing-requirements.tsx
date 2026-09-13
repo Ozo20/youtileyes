@@ -54,9 +54,7 @@ export function StaffingRequirements({
     <section className="master-subsection">
       <div className="master-subsection-header">
         <div>
-          <span className="eyebrow">
-            Staffing
-          </span>
+          <span className="eyebrow">Staffing</span>
           <h3>Requirements</h3>
         </div>
 
@@ -91,32 +89,23 @@ export function StaffingRequirements({
                     ? ` · from ${rule.minimumStudentCount} students`
                     : ""}
                   {rule.hard ? " · hard" : " · soft"}
-                  {rule.minimumCourseLevel != null && ` · course level ≥ ${rule.minimumCourseLevel}`}
-                  {rule.preferredCourseLevel != null && ` · preferred course level ${rule.preferredCourseLevel}`}
+                  {rule.minimumCourseLevel != null &&
+                    ` · course level ≥ ${rule.minimumCourseLevel}`}
+                  {rule.preferredCourseLevel != null &&
+                    ` · preferred course level ${rule.preferredCourseLevel}`}
                 </span>
               </div>
 
               <form action={toggleStaffingRequirement}>
-                <input
-                  type="hidden"
-                  name="id"
-                  value={rule.id}
-                />
+                <input type="hidden" name="id" value={rule.id} />
                 <input
                   type="hidden"
                   name="active"
                   value={String(!rule.active)}
                 />
-                <input
-                  type="hidden"
-                  name="returnPath"
-                  value={returnPath}
-                />
+                <input type="hidden" name="returnPath" value={returnPath} />
 
-                <Button
-                  type="submit"
-                  variant="ghost"
-                >
+                <Button type="submit" variant="ghost">
                   {rule.active ? "Deactivate" : "Reactivate"}
                 </Button>
               </form>
@@ -140,24 +129,13 @@ export function StaffingRequirements({
         />
 
         {source === "COURSE" ? (
-          <input
-            type="hidden"
-            name="courseId"
-            value={targetId}
-          />
+          <input type="hidden" name="courseId" value={targetId} />
         ) : (
-          <input
-            type="hidden"
-            name="roomId"
-            value={targetId}
-          />
+          <input type="hidden" name="roomId" value={targetId} />
         )}
 
         <Field label="Role">
-          <SelectInput
-            name="role"
-            defaultValue={StaffingRoleType.ASSISTANT}
-          >
+          <SelectInput name="role" defaultValue={StaffingRoleType.ASSISTANT}>
             {Object.values(StaffingRoleType).map((role) => (
               <option key={role} value={role}>
                 {role}
@@ -167,35 +145,36 @@ export function StaffingRequirements({
         </Field>
 
         <Field label="Count">
-          <TextInput
-            name="count"
-            type="number"
-            min={1}
-            defaultValue={1}
-          />
+          <TextInput name="count" type="number" min={1} defaultValue={1} />
         </Field>
 
         <Field label="Qualification">
-          <SelectInput
-            name="requiredQualificationId"
-            defaultValue=""
-          >
-            <option value="">
-              No additional qualification
-            </option>
+          <SelectInput name="requiredQualificationId" defaultValue="">
+            <option value="">No additional qualification</option>
             {qualifications.map((qualification) => (
-              <option
-                key={qualification.id}
-                value={qualification.id}
-              >
+              <option key={qualification.id} value={qualification.id}>
                 {qualification.code} · {qualification.name}
               </option>
             ))}
           </SelectInput>
         </Field>
 
-        <Field label="Minimum course competence level"><TextInput name="minimumCourseLevel" type="number" min={1} max={100} /></Field>
-        <Field label="Preferred course competence level"><TextInput name="preferredCourseLevel" type="number" min={1} max={100} /></Field>
+        <Field label="Minimum course competence level">
+          <TextInput
+            name="minimumCourseLevel"
+            type="number"
+            min={1}
+            max={100}
+          />
+        </Field>
+        <Field label="Preferred course competence level">
+          <TextInput
+            name="preferredCourseLevel"
+            type="number"
+            min={1}
+            max={100}
+          />
+        </Field>
         <Field label="Min. level">
           <TextInput
             name="minimumQualificationLevel"
@@ -205,10 +184,7 @@ export function StaffingRequirements({
           />
         </Field>
 
-        <Field
-          label="Students ≥"
-          hint="Optional trigger"
-        >
+        <Field label="Students ≥" hint="Optional trigger">
           <TextInput
             name="minimumStudentCount"
             type="number"
@@ -218,16 +194,9 @@ export function StaffingRequirements({
         </Field>
 
         <div className="staffing-create-footer">
-          <CheckboxField
-            name="hard"
-            label="Hard requirement"
-            defaultChecked
-          />
+          <CheckboxField name="hard" label="Hard requirement" defaultChecked />
 
-          <Button
-            type="submit"
-            variant="secondary"
-          >
+          <Button type="submit" variant="secondary">
             Add requirement
           </Button>
         </div>

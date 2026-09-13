@@ -21,6 +21,38 @@ async function main() {
     },
   });
 
+  const demoUser = await prisma.user.upsert({
+    where: { email: "ola.solem@example.test" },
+    update: {
+      name: "Ola Solem",
+      active: true,
+    },
+    create: {
+      email: "ola.solem@example.test",
+      name: "Ola Solem",
+      active: true,
+    },
+  });
+
+  await prisma.tenantMembership.upsert({
+    where: {
+      tenantId_userId: {
+        tenantId: tenant.id,
+        userId: demoUser.id,
+      },
+    },
+    update: {
+      role: "ADMIN",
+      active: true,
+    },
+    create: {
+      tenantId: tenant.id,
+      userId: demoUser.id,
+      role: "ADMIN",
+      active: true,
+    },
+  });
+
   const academicPeriod = await prisma.academicPeriod.upsert({
     where: {
       tenantId_code: {
@@ -290,15 +322,68 @@ async function main() {
     instructors.map((instructor) => [instructor.externalId!, instructor]),
   );
 
+  // Legacy teaching-role qualifications were replaced by the
+  // subject-specific InstructorCourse qualification model.
+  //
+  // Remove old demo rows during reseed so SUBJECT_LEAD and
+  // TEACHING_SUPPORT do not remain as duplicate teaching concepts.
+  const legacyTeachingQualifications = await prisma.qualification.findMany({
+    where: {
+      tenantId: tenant.id,
+      code: {
+        in: ["SUBJECT_LEAD", "TEACHING_SUPPORT"],
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  const legacyTeachingQualificationIds = legacyTeachingQualifications.map(
+    (qualification) => qualification.id,
+  );
+
+  if (legacyTeachingQualificationIds.length > 0) {
+    await prisma.staffingRequirement.updateMany({
+      where: {
+        tenantId: tenant.id,
+        requiredQualificationId: {
+          in: legacyTeachingQualificationIds,
+        },
+      },
+      data: {
+        requiredQualificationId: null,
+        minimumQualificationLevel: null,
+      },
+    });
+
+    await prisma.instructorQualification.deleteMany({
+      where: {
+        tenantId: tenant.id,
+        qualificationId: {
+          in: legacyTeachingQualificationIds,
+        },
+      },
+    });
+
+    await prisma.qualification.deleteMany({
+      where: {
+        tenantId: tenant.id,
+        id: {
+          in: legacyTeachingQualificationIds,
+        },
+      },
+    });
+  }
+
   const qualificationDefinitions = [
-    ["SUBJECT_LEAD", "Subject lead"],
-    ["TEACHING_SUPPORT", "Teaching support"],
+    ["ADJUNKT", "Adjunkt", "Institution-defined formal qualification or credential."],
+    ["LEKTOR", "Lektor", "Institution-defined formal qualification or credential."],
+    ["PROFESSOR", "Professor", "Institution-defined academic qualification or title."],
   ] as const;
 
-  const qualificationByCode: Record<string, { id: string }> = {};
-
-  for (const [code, name] of qualificationDefinitions) {
-    const qualification = await prisma.qualification.upsert({
+  for (const [code, name, description] of qualificationDefinitions) {
+    await prisma.qualification.upsert({
       where: {
         tenantId_code: {
           tenantId: tenant.id,
@@ -307,46 +392,15 @@ async function main() {
       },
       update: {
         name,
+        description,
         active: true,
       },
       create: {
         tenantId: tenant.id,
         code,
         name,
-      },
-    });
-
-    qualificationByCode[code] = qualification;
-  }
-
-  const instructorQualificationDefinitions = [
-    ["T1", "SUBJECT_LEAD", 3],
-    ["T1", "TEACHING_SUPPORT", 2],
-    ["T2", "TEACHING_SUPPORT", 2],
-  ] as const;
-
-  for (const [
-    instructorExternalId,
-    qualificationCode,
-    level,
-  ] of instructorQualificationDefinitions) {
-    await prisma.instructorQualification.upsert({
-      where: {
-        tenantId_instructorId_qualificationId: {
-          tenantId: tenant.id,
-          instructorId: instructorByExternalId[instructorExternalId].id,
-          qualificationId: qualificationByCode[qualificationCode].id,
-        },
-      },
-      update: {
-        level,
+        description,
         active: true,
-      },
-      create: {
-        tenantId: tenant.id,
-        instructorId: instructorByExternalId[instructorExternalId].id,
-        qualificationId: qualificationByCode[qualificationCode].id,
-        level,
       },
     });
   }
@@ -553,10 +607,9 @@ async function main() {
         courseId: physicsCourse.id,
         role: "LEAD",
         count: 1,
-        requiredQualificationId: qualificationByCode["SUBJECT_LEAD"].id,
-        minimumQualificationLevel: 2,
-        minimumCourseLevel: 2,
-        preferredCourseLevel: 3,
+        minimumCourseQualificationLevel: "PRIMARY",
+        minimumCourseLevel: 70,
+        preferredCourseLevel: 90,
         priority: 200,
         hard: true,
       },
@@ -566,10 +619,9 @@ async function main() {
         courseId: physicsCourse.id,
         role: "ASSISTANT",
         count: 1,
-        requiredQualificationId: qualificationByCode["TEACHING_SUPPORT"].id,
-        minimumQualificationLevel: 1,
-        minimumCourseLevel: 1,
-        preferredCourseLevel: 2,
+        minimumCourseQualificationLevel: "SUPPORT",
+        minimumCourseLevel: 40,
+        preferredCourseLevel: 70,
         priority: 180,
         hard: true,
       },
@@ -1139,11 +1191,10 @@ async function main() {
     });
   }
 
-  // The small demo already links Per Olsen to FYS and gives him the
-  // TEACHING_SUPPORT qualification. Give that existing FYS link an explicit
-  // numeric competence level so he can satisfy the hard FYS ASSISTANT role.
+  // Give Per Olsen's existing FYS link an explicit numeric competence
+  // level so he can satisfy the FYS ASSISTANT staffing requirement.
   //
-  // Kari remains the stronger FYS lead; Per is deliberately only level 1.
+  // Kari remains the stronger FYS lead; Per is deliberately only level 40.
   const perOlsen = await prisma.instructor.findFirstOrThrow({
     where: {
       tenantId: tenant.id,
@@ -1162,7 +1213,7 @@ async function main() {
       },
     },
     data: {
-      competenceLevel: 1,
+      competenceLevel: 40,
       active: true,
     },
   });
@@ -1173,40 +1224,40 @@ async function main() {
   // while competenceLevel is the numeric solver signal used by staffing
   // minimum/preferred levels.
   const expandedCourseCompetence = [
-    ["T1", "MAT", 3, "PREFER", 120],
-    ["T1", "FYS", 3, "NEUTRAL", 100],
-    ["T2", "ENG", 3, "PREFER", 120],
-    ["T2", "NOR", 3, "NEUTRAL", 100],
+    ["T1", "MAT", 90, "PREFER", 120],
+    ["T1", "FYS", 90, "NEUTRAL", 100],
+    ["T2", "ENG", 90, "PREFER", 120],
+    ["T2", "NOR", 90, "NEUTRAL", 100],
 
-    ["T3", "MAT", 3, "PREFER", 140],
-    ["T3", "FYS", 2, "NEUTRAL", 100],
+    ["T3", "MAT", 90, "PREFER", 140],
+    ["T3", "FYS", 70, "NEUTRAL", 100],
 
-    ["T4", "ENG", 3, "PREFER", 140],
-    ["T4", "NOR", 2, "NEUTRAL", 100],
+    ["T4", "ENG", 90, "PREFER", 140],
+    ["T4", "NOR", 70, "NEUTRAL", 100],
 
-    ["T5", "FYS", 3, "PREFER", 180],
-    ["T5", "MAT", 1, "AVOID", 120],
+    ["T5", "FYS", 90, "PREFER", 180],
+    ["T5", "MAT", 40, "AVOID", 120],
 
-    ["T6", "NOR", 3, "PREFER", 150],
-    ["T6", "HIS", 3, "NEUTRAL", 100],
+    ["T6", "NOR", 90, "PREFER", 150],
+    ["T6", "HIS", 90, "NEUTRAL", 100],
 
-    ["T7", "SAM", 3, "PREFER", 150],
-    ["T7", "GEO", 3, "NEUTRAL", 100],
+    ["T7", "SAM", 90, "PREFER", 150],
+    ["T7", "GEO", 90, "NEUTRAL", 100],
 
-    ["T8", "IT", 3, "PREFER", 200],
-    ["T8", "MAT", 2, "NEUTRAL", 100],
+    ["T8", "IT", 90, "PREFER", 200],
+    ["T8", "MAT", 70, "NEUTRAL", 100],
 
-    ["T9", "ENG", 3, "PREFER", 140],
-    ["T9", "SAM", 2, "NEUTRAL", 100],
+    ["T9", "ENG", 90, "PREFER", 140],
+    ["T9", "SAM", 70, "NEUTRAL", 100],
 
-    ["T10", "HIS", 3, "PREFER", 160],
-    ["T10", "GEO", 3, "NEUTRAL", 100],
+    ["T10", "HIS", 90, "PREFER", 160],
+    ["T10", "GEO", 90, "NEUTRAL", 100],
 
-    ["T11", "IT", 3, "PREFER", 160],
-    ["T11", "FYS", 1, "AVOID", 150],
+    ["T11", "IT", 90, "PREFER", 160],
+    ["T11", "FYS", 40, "AVOID", 150],
 
-    ["T12", "NOR", 3, "PREFER", 140],
-    ["T12", "ENG", 2, "NEUTRAL", 100],
+    ["T12", "NOR", 90, "PREFER", 140],
+    ["T12", "ENG", 70, "NEUTRAL", 100],
   ] as const;
 
   for (const [

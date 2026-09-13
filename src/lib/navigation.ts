@@ -1,5 +1,4 @@
 import {
-  BadgeCheck,
   BookOpenCheck,
   CalendarDays,
   CalendarRange,
@@ -10,13 +9,18 @@ import {
   LayoutDashboard,
   MapPin,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Users,
   UsersRound,
 } from "lucide-react";
 
 export const portalNavigation = [
-  { label: "Requirements & preferences", href: "/preferences", icon: SlidersHorizontal },
+  {
+    label: "Requirements & preferences",
+    href: "/preferences",
+    icon: SlidersHorizontal,
+  },
   {
     label: "Overview",
     href: "/",
@@ -53,11 +57,6 @@ export const portalNavigation = [
     icon: DoorOpen,
   },
   {
-    label: "Qualifications",
-    href: "/qualifications",
-    icon: BadgeCheck,
-  },
-  {
     label: "Locations",
     href: "/locations",
     icon: MapPin,
@@ -81,6 +80,12 @@ export const portalNavigation = [
     label: "History",
     href: "/history",
     icon: FileClock,
+  },
+  {
+    label: "Admin",
+    href: "/admin",
+    icon: ShieldCheck,
+    adminOnly: true,
   },
   {
     label: "Settings",
