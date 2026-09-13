@@ -33,7 +33,8 @@
     "solver:job:queued": "tsx scripts/process-next-solver-job.ts",
     "solver:recovery-case": "tsx scripts/process-recovery-case-job.ts",
     "solver:test:preferences:1.4": "PYTHONPATH=. solver/.venv/bin/python solver/tests/preferences_v1_4.py",
-    "planning:test:preferences": "tsx scripts/test-preference-compiler.ts"
+    "planning:test:preferences": "tsx scripts/test-preference-compiler.ts",
+    "db:bootstrap:staging": "tsx prisma/bootstrap-staging.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
