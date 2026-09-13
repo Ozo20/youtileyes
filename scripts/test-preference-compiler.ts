@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import { compileTimeRules, roomRequirementCost, type TimeRule, type FeatureRequirement } from '../src/lib/planning/preference-compiler';
+const time: TimeRule = { id: 'lunch', name: 'Lunch', weekdays: [4], startMinute: 690, endMinute: 720, audience: 'ALL', scopeType: 'TENANT', constraintType: 'SOFT', weight: 100, validFrom: null, validTo: null, studentId: null, instructorId: null, teachingGroupId: null, studentCohortId: null, courseId: null };
+const groups = [{ id: 'G', courseId: 'MAT', studentCohortId: 'C', studentIds: ['S','T'] }];
+const dates = ['2026-09-16', '2026-09-17', '2026-09-18'];
+assert.equal(compileTimeRules([time], dates, groups, ['A','B']).length, 1);
+assert.deepEqual(compileTimeRules([{ ...time, audience: 'STUDENTS', studentId: 'missing' }], dates, groups, ['A']), []);
+assert.equal(compileTimeRules([{ ...time, audience: 'STUDENTS', studentCohortId: 'C', scopeType: 'TEACHING_GROUP' }], dates, groups, ['A'])[0].groupId, 'G');
+assert.equal(compileTimeRules([{ ...time, validTo: new Date('2026-09-16') }], dates, groups, ['A']).length, 0);
+const req: FeatureRequirement = { id: 'Q', featureId: 'STEP_FREE', quantity: 1, perStudent: false, hard: true, weight: 100, courseId: null, studentId: 'S', instructorId: null };
+assert.equal(roomRequirementCost([req], new Map(), 30).allowed, false);
+assert.equal(roomRequirementCost([req], new Map([['STEP_FREE',1]]), 30).allowed, true);
+assert.deepEqual(roomRequirementCost([{ ...req, featureId: 'PC', quantity: 1, perStudent: true, hard: false }], new Map([['PC',15]]), 20), { allowed: true, penalty: 500, missing: [] });
+console.log('Preference compiler tests: PASS');

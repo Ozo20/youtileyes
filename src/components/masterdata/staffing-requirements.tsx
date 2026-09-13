@@ -27,6 +27,8 @@ type StaffingRule = {
   role: StaffingRoleType;
   count: number;
   minimumQualificationLevel: number | null;
+  minimumCourseLevel?: number | null;
+  preferredCourseLevel?: number | null;
   minimumStudentCount: number | null;
   hard: boolean;
   active: boolean;
@@ -89,6 +91,8 @@ export function StaffingRequirements({
                     ? ` · from ${rule.minimumStudentCount} students`
                     : ""}
                   {rule.hard ? " · hard" : " · soft"}
+                  {rule.minimumCourseLevel != null && ` · course level ≥ ${rule.minimumCourseLevel}`}
+                  {rule.preferredCourseLevel != null && ` · preferred course level ${rule.preferredCourseLevel}`}
                 </span>
               </div>
 
@@ -190,6 +194,8 @@ export function StaffingRequirements({
           </SelectInput>
         </Field>
 
+        <Field label="Minimum course competence level"><TextInput name="minimumCourseLevel" type="number" min={1} max={100} /></Field>
+        <Field label="Preferred course competence level"><TextInput name="preferredCourseLevel" type="number" min={1} max={100} /></Field>
         <Field label="Min. level">
           <TextInput
             name="minimumQualificationLevel"

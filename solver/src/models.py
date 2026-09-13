@@ -8,6 +8,9 @@ class Instructor:
     courses: frozenset[str]
     course_penalties: dict[str, int] = field(default_factory=dict)
     qualification_levels: dict[str, int] = field(default_factory=dict)
+    course_levels: dict[str, int] = field(default_factory=dict)
+    course_validity: dict[str, list[str | None]] = field(default_factory=dict)
+    qualification_validity: dict[str, list[str | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -16,6 +19,13 @@ class StaffingRole:
     role: str
     required_qualification_id: str | None = None
     minimum_qualification_level: int | None = None
+    minimum_course_level: int | None = None
+    preferred_course_level: int | None = None
+    minimum_student_count: int = 0
+    hard: bool = True
+    weight: int = 100
+    valid_from: str | None = None
+    valid_to: str | None = None
 
 
 @dataclass(frozen=True)

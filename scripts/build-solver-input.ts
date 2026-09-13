@@ -1,9 +1,18 @@
 import "dotenv/config";
 
 import { writeFile } from "node:fs/promises";
+import {
+  compileInstructorBreakRules,
+  compileStudentBreakRules,
+  compileTimeRules,
+  roomRequirementCost,
+  validOn,
+  type PlacementRule,
+} from "../src/lib/planning/preference-compiler";
+
 import { prisma } from "../src/lib/prisma";
 
-const SCHEMA_VERSION = "1.3";
+const SCHEMA_VERSION = "1.4";
 const DEFAULT_OUTPUT_PATH = "/tmp/youtileyes_solver_input.json";
 
 function parseArgs() {
@@ -145,6 +154,7 @@ async function main() {
   const rooms = await prisma.room.findMany({
     where: { tenantId: tenant.id, active: true },
     include: {
+      features: true,
       coursePreferences: { where: { active: true } },
       staffingRequirements: {
         where: { active: true, source: "ROOM" },
@@ -189,6 +199,15 @@ async function main() {
     orderBy: { code: "asc" },
   });
 
+  const [timeRules, breakRules, roomRequirements] = await Promise.all([
+    prisma.planningRule.findMany({
+      where: { tenantId: tenant.id, active: true, ruleType: "AVOID_TIME_WINDOW" },
+    }),
+    prisma.planningRule.findMany({
+      where: { tenantId: tenant.id, active: true, ruleType: "MIN_BREAK_MINUTES" },
+    }),
+    prisma.roomRequirement.findMany({ where: { tenantId: tenant.id, active: true } }),
+  ]);
   const groupById = new Map(teachingGroups.map((group) => [group.id, group]));
 
   const loadProfile = await prisma.loadProfile.findFirst({
@@ -275,23 +294,35 @@ async function main() {
     where: { tenantId: tenant.id, active: true },
   });
 
-  const roomPreferenceByCourse = new Map<
-    string,
-    Map<string, { suitability: "PREFERRED" | "ALLOWED" | "AVOID" | "PROHIBITED"; penalty: number }>
-  >();
-
-  for (const room of rooms) {
-    for (const preference of room.coursePreferences) {
-      const byRoom = roomPreferenceByCourse.get(preference.courseId) ?? new Map();
-      byRoom.set(room.id, { suitability: preference.suitability, penalty: preference.penalty });
-      roomPreferenceByCourse.set(preference.courseId, byRoom);
-    }
-  }
-
   const instructorPreferenceByGroup = new Map<string, Map<string, number>>();
+
   for (const group of teachingGroups) {
     const map = new Map<string, number>();
+
+    // General instructor preference for this course.
+    // A teaching-group preference below is more specific and overrides it.
+    for (const instructor of instructors) {
+      const courseLink = instructor.courses.find(
+        (link) => link.courseId === group.courseId,
+      );
+
+      if (!courseLink || courseLink.preference === "NEUTRAL") continue;
+
+      map.set(
+        instructor.id,
+        courseLink.preference === "AVOID"
+          ? Math.max(0, courseLink.preferenceWeight)
+          : -Math.max(0, courseLink.preferenceWeight),
+      );
+    }
+
+    // Group-specific preference overrides the general course preference.
     for (const preference of group.instructorPreferences) {
+      if (preference.preference === "NEUTRAL") {
+        map.delete(preference.instructorId);
+        continue;
+      }
+
       map.set(
         preference.instructorId,
         preference.preference === "AVOID"
@@ -299,6 +330,7 @@ async function main() {
           : -Math.max(0, preference.weight),
       );
     }
+
     instructorPreferenceByGroup.set(group.id, map);
   }
 
@@ -433,6 +465,48 @@ async function main() {
     },
   });
 
+  const dates = calendarDays.filter(d => d.teachingAllowed).map(d => dateKey(d.date));
+  const solverGroups = teachingGroups.map(g => ({
+    id: g.id,
+    courseId: g.courseId,
+    studentCohortId: g.studentCohortId,
+    studentIds: g.students.map(s => s.studentId),
+  }));
+
+  const placementRules: PlacementRule[] = compileTimeRules(
+    timeRules,
+    dates,
+    solverGroups,
+    instructors.map(i => i.id),
+  );
+
+  const studentBreakRules = compileStudentBreakRules(
+    breakRules,
+    dates,
+    solverGroups,
+  );
+
+  const instructorBreakRules = compileInstructorBreakRules(
+    breakRules,
+    dates,
+    instructors.map(i => i.id),
+  );
+  for (const date of dates) {
+    for (const room of rooms) {
+      if (!validOn(room, date)) placementRules.push({ ruleId: room.id, name: `Room validity: ${room.name}`, date, roomId: room.id, startMinute: 0, endMinute: 1440, hard: true, weight: 0 });
+      for (const group of teachingGroups) {
+        const preference = room.coursePreferences.find(p => p.courseId === group.courseId && validOn(p, date));
+        const hasPreferred = rooms.some(r => r.coursePreferences.some(p => p.courseId === group.courseId && p.suitability === "PREFERRED" && validOn(p, date)));
+        const penalty = preference?.suitability === "PREFERRED" ? 0 : preference?.suitability === "AVOID" ? Math.max(50, preference.penalty) : Math.max(preference?.penalty ?? 0, hasPreferred ? 10 : 0);
+        if (penalty || preference?.suitability === "PROHIBITED") placementRules.push({ ruleId: preference?.id ?? room.id, name: `Room preference: ${room.name}`, date, groupId: group.id, roomId: room.id, startMinute: 0, endMinute: 1440, hard: preference?.suitability === "PROHIBITED", weight: penalty });
+      }
+      for (const instructor of instructors) {
+        const cost = roomRequirementCost(roomRequirements.filter(r => r.instructorId === instructor.id), new Map(room.features.map(f => [f.featureId, f.quantity])), 1);
+        if (!cost.allowed || cost.penalty) placementRules.push({ ruleId: instructor.id, name: "Instructor room requirements", date, instructorId: instructor.id, roomId: room.id, startMinute: 0, endMinute: 1440, hard: !cost.allowed, weight: cost.penalty });
+      }
+    }
+  }
+
   const payload = {
     schemaVersion: SCHEMA_VERSION,
     tenantId: tenant.id,
@@ -456,8 +530,11 @@ async function main() {
       coursePenalties: Object.fromEntries(
         instructor.courses.map((link) => [link.course.id, qualificationPenalty(link.qualificationLevel)]),
       ),
+      courseLevels: Object.fromEntries(instructor.courses.filter(link => link.competenceLevel != null).map(link => [link.courseId, link.competenceLevel])),
+      courseValidity: Object.fromEntries(instructor.courses.map(link => [link.courseId, [link.validFrom ? dateKey(link.validFrom) : null, link.validTo ? dateKey(link.validTo) : null]])),
+      qualificationValidity: Object.fromEntries(instructor.qualifications.map(link => [link.qualificationId, [link.validFrom ? dateKey(link.validFrom) : null, link.validTo ? dateKey(link.validTo) : null]])),
       qualificationLevels: Object.fromEntries(
-        instructor.qualifications.map((link) => [
+        instructor.qualifications.filter((link) => link.qualification.active).map((link) => [
           link.qualification.id,
           link.level,
         ]),
@@ -468,32 +545,32 @@ async function main() {
       name: room.name,
       capacity: room.capacity,
       staffingRoles: room.staffingRequirements
-        .filter((rule) => !rule.minimumStudentCount || rule.minimumStudentCount <= room.capacity)
         .flatMap((rule) =>
           Array.from({ length: rule.count }, (_, index) => ({
             id: `${rule.id}:${index + 1}`,
             role: rule.role,
             requiredQualificationId: rule.requiredQualificationId,
             minimumQualificationLevel: rule.minimumQualificationLevel,
+            minimumCourseLevel: rule.minimumCourseLevel,
+            preferredCourseLevel: rule.preferredCourseLevel,
+            minimumStudentCount: rule.minimumStudentCount,
+            hard: rule.hard, weight: rule.priority,
+            validFrom: rule.validFrom ? dateKey(rule.validFrom) : null,
+            validTo: rule.validTo ? dateKey(rule.validTo) : null,
           })),
         ),
     })),
     teachingGroups: teachingGroups.map((group) => {
-      const explicitPreferences = roomPreferenceByCourse.get(group.course.id);
       const allowedRoomIds: string[] = [];
       const roomPenalties: Record<string, number> = {};
-
+      const requirements = roomRequirements.filter(rule => rule.courseId === group.courseId || (rule.studentId && group.students.some(s => s.studentId === rule.studentId)));
       for (const room of rooms) {
-        const preference = explicitPreferences?.get(room.id);
-        if (preference?.suitability === "PROHIBITED") continue;
+        const cost = roomRequirementCost(requirements, new Map(room.features.map(f => [f.featureId, f.quantity])), group.students.length);
+        if (!cost.allowed) continue;
         allowedRoomIds.push(room.id);
-        if (preference) {
-          roomPenalties[room.id] =
-            preference.suitability === "AVOID"
-              ? Math.max(preference.penalty, 50)
-              : Math.max(preference.penalty, 0);
-        }
+        roomPenalties[room.id] = cost.penalty;
       }
+      if (!allowedRoomIds.length) throw new Error(`No room meets equipment/accessibility requirements for ${group.code ?? group.id}. Required features: ${requirements.filter(r => r.hard).map(r => r.featureId).join(", ")}`);
 
       return {
         id: group.id,
@@ -518,6 +595,12 @@ async function main() {
               role: rule.role,
               requiredQualificationId: rule.requiredQualificationId,
               minimumQualificationLevel: rule.minimumQualificationLevel,
+            minimumCourseLevel: rule.minimumCourseLevel,
+            preferredCourseLevel: rule.preferredCourseLevel,
+            minimumStudentCount: rule.minimumStudentCount,
+            hard: rule.hard, weight: rule.priority,
+            validFrom: rule.validFrom ? dateKey(rule.validFrom) : null,
+            validTo: rule.validTo ? dateKey(rule.validTo) : null,
             })),
           ),
       };
@@ -528,6 +611,9 @@ async function main() {
     })),
     teachingOccurrences,
     resourceBlocks,
+    placementRules,
+    studentBreakRules,
+    instructorBreakRules,
     travel,
     studentLoadProfile: {
       maxTeachingMinutesPerDay: loadProfile.maxTeachingMinutesPerDay,

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 export const portalNavigation = [
+  { label: "Requirements & preferences", href: "/preferences", icon: SlidersHorizontal },
   {
     label: "Overview",
     href: "/",

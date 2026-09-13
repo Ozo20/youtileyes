@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from itertools import combinations, permutations
+from itertools import combinations, product
 from time import perf_counter
 
 from ortools.sat.python import cp_model
@@ -66,6 +66,7 @@ class _ResourceOption:
     instructor_ids: tuple[str, ...]
     staffing_roles: tuple[str, ...]
     assignment_penalty: int
+    allowed_date: str | None = None
 
 
 class MultiDayScheduleError(RuntimeError):
@@ -111,100 +112,59 @@ def _block_map(
     return result
 
 
-def _effective_roles(group: TeachingGroup, room: Room) -> tuple[StaffingRole, ...]:
-    roles = tuple(group.staffing_roles) + tuple(room.staffing_roles)
-    if roles:
-        return roles
-
-    return (StaffingRole(id="default-lead", role="LEAD"),)
+def _valid_on(date: str | None, start: str | None, end: str | None) -> bool:
+    return date is None or ((start is None or date >= start) and (end is None or date <= end))
 
 
-def _qualified_for_role(
-    instructor: Instructor,
-    group: TeachingGroup,
-    role: StaffingRole,
-) -> bool:
+def _effective_roles(group: TeachingGroup, room: Room, date: str | None = None) -> tuple[StaffingRole, ...]:
+    roles = tuple(role for role in (*group.staffing_roles, *room.staffing_roles)
+                  if len(group.students) >= role.minimum_student_count
+                  and _valid_on(date, role.valid_from, role.valid_to))
+    # Optional assistants must never allow a lesson without a teacher.
+    if not any(role.hard for role in roles):
+        roles = (StaffingRole(id="default-lead", role="LEAD"),) + roles
+    return roles
+
+
+def _qualified_for_role(instructor: Instructor, group: TeachingGroup,
+                        role: StaffingRole, date: str | None = None) -> bool:
     if group.course not in instructor.courses:
         return False
-
+    if not _valid_on(date, *instructor.course_validity.get(group.course, [None, None])):
+        return False
+    if role.minimum_course_level is not None and instructor.course_levels.get(group.course, 0) < role.minimum_course_level:
+        return False
     if role.required_qualification_id is None:
         return True
-
     level = instructor.qualification_levels.get(role.required_qualification_id)
-    if level is None:
-        return False
-
-    minimum = role.minimum_qualification_level or 1
-    return level >= minimum
+    return (level is not None and level >= (role.minimum_qualification_level or 1)
+            and _valid_on(date, *instructor.qualification_validity.get(role.required_qualification_id, [None, None])))
 
 
-def _staffing_options(
-    *,
-    group: TeachingGroup,
-    room: Room,
-    instructors: list[Instructor],
-) -> list[tuple[tuple[str, ...], tuple[str, ...], int]]:
-    """Return exact staffing choices independent of date/time availability.
-
-    Instructor availability is enforced later through optional intervals and
-    fixed availability blocks. Keeping staffing independent of time avoids
-    multiplying every teacher/room combination by every possible start time.
-    """
-
-    roles = _effective_roles(group, room)
-    eligible_by_role: list[list[Instructor]] = []
-
+def _staffing_options(*, group: TeachingGroup, room: Room,
+                     instructors: list[Instructor], date: str | None = None
+                     ) -> list[tuple[tuple[str, ...], tuple[str, ...], int]]:
+    roles = _effective_roles(group, room, date)
+    choices = []
     for role in roles:
-        eligible = [
-            instructor
-            for instructor in instructors
-            if _qualified_for_role(instructor, group, role)
-        ]
-        if not eligible:
-            return []
-        eligible_by_role.append(eligible)
-
-    unique_instructors = {
-        item.id: item
-        for items in eligible_by_role
-        for item in items
-    }
-    if len(unique_instructors) < len(roles):
-        return []
-
-    results: list[tuple[tuple[str, ...], tuple[str, ...], int]] = []
-    seen: set[tuple[str, ...]] = set()
-
-    for instructor_order in permutations(
-        unique_instructors.values(),
-        len(roles),
-    ):
-        if any(
-            instructor not in eligible_by_role[index]
-            for index, instructor in enumerate(instructor_order)
-        ):
+        eligible = [i for i in instructors if _qualified_for_role(i, group, role, date)]
+        choices.append(eligible if role.hard else [*eligible, None])
+    results = {}
+    for assignment in product(*choices):
+        present = [i for i in assignment if i is not None]
+        ids = tuple(i.id for i in present)
+        if not ids or len(set(ids)) != len(ids):
             continue
-
-        ids = tuple(item.id for item in instructor_order)
-        if ids in seen:
-            continue
-        seen.add(ids)
-
+        selected_roles = tuple(role.role for role, i in zip(roles, assignment) if i is not None)
         penalty = sum(
-            instructor.course_penalties.get(group.course, 0)
-            + group.instructor_penalties.get(instructor.id, 0)
-            for instructor in instructor_order
+            role.weight if i is None else (
+                i.course_penalties.get(group.course, 0) + group.instructor_penalties.get(i.id, 0)
+                + max(0, (role.preferred_course_level or 0) - i.course_levels.get(group.course, 0)) * role.weight
+            ) for role, i in zip(roles, assignment)
         )
-
-        results.append(
-            (
-                ids,
-                tuple(role.role for role in roles),
-                penalty,
-            )
-        )
-
-    return results
+        key = (ids, selected_roles)
+        results[key] = min(results.get(key, penalty), penalty)
+    return [(ids, roles, penalty) for (ids, roles), penalty in results.items()]
 
 
 def _resource_options(
@@ -212,6 +172,7 @@ def _resource_options(
     group: TeachingGroup,
     instructors: list[Instructor],
     rooms: list[Room],
+    date: str | None = None,
 ) -> list[_ResourceOption]:
     result: list[_ResourceOption] = []
 
@@ -225,10 +186,12 @@ def _resource_options(
             group=group,
             room=room,
             instructors=instructors,
+            date=date,
         ):
             result.append(
                 _ResourceOption(
                     room_id=room.id,
+                    allowed_date=date,
                     instructor_ids=instructor_ids,
                     staffing_roles=staffing_roles,
                     assignment_penalty=(
@@ -259,6 +222,7 @@ def _staffing_assignments(
             group=group,
             room=room,
             instructors=instructors,
+            date=date,
         )
         if all(
             not _is_blocked(
@@ -379,6 +343,9 @@ def solve_multi_day_week(
     instructor_blocks: list[ResourceBlock] | None = None,
     student_blocks: list[ResourceBlock] | None = None,
     room_blocks: list[ResourceBlock] | None = None,
+    placement_rules: list[dict] | None = None,
+    student_break_rules: list[dict] | None = None,
+    instructor_break_rules: list[dict] | None = None,
     max_time_seconds: float = 30,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> MultiDayScheduleResult:
@@ -390,6 +357,9 @@ def solve_multi_day_week(
     date x start x room x staffing Cartesian Boolean candidate model.
     """
 
+    placement_rules = placement_rules or []
+    student_break_rules = student_break_rules or []
+    instructor_break_rules = instructor_break_rules or []
     started = perf_counter()
     instructor_blocks = instructor_blocks or []
     student_blocks = student_blocks or []
@@ -433,11 +403,9 @@ def solve_multi_day_week(
                 f"{occurrence.teaching_group_id}"
             )
 
-        options = _resource_options(
-            group=group,
-            instructors=instructors,
-            rooms=rooms,
-        )
+        options = [option for date in occurrence.allowed_dates for option in _resource_options(
+            group=group, instructors=instructors, rooms=rooms, date=date,
+        )]
         if not options:
             raise MultiDayScheduleError(
                 f"No valid room/staffing options for occurrence {occurrence.id} "
@@ -578,6 +546,9 @@ def solve_multi_day_week(
             )
             option_vars[(occurrence.id, option_index)] = option_var
             occurrence_option_vars.append(option_var)
+            if option.allowed_date is not None:
+                matching_date = date_vars.get((occurrence.id, option.allowed_date))
+                model.add(option_var <= matching_date if matching_date is not None else option_var == 0)
             room_to_options[option.room_id].append(option_var)
             for instructor_id in option.instructor_ids:
                 instructor_to_options[instructor_id].append(option_var)
@@ -602,6 +573,39 @@ def solve_multi_day_week(
             )
             model.add(sum(source_vars) == instructor_var)
             instructor_vars[(occurrence.id, instructor_id)] = instructor_var
+
+    preference_penalty_vars = []
+    for occurrence in occurrences:
+        for option_index, option in enumerate(resource_options_by_occurrence[occurrence.id]):
+            date = option.allowed_date
+            key = (occurrence.id, date)
+            if key not in start_vars:
+                continue
+            applicable = [r for r in placement_rules
+                          if r["date"] == date
+                          and (not r.get("groupId") or r["groupId"] == occurrence.teaching_group_id)
+                          and (not r.get("instructorId") or r["instructorId"] in option.instructor_ids)
+                          and (not r.get("roomId") or r["roomId"] == option.room_id)]
+            if not applicable:
+                continue
+            rows = []
+            for start in valid_starts_by_occurrence_date[key]:
+                penalty = 0
+                blocked = False
+                for rule in applicable:
+                    overlap = max(0, min(start + occurrence.duration_minutes, rule["endMinute"]) - max(start, rule["startMinute"]))
+                    blocked |= bool(overlap and rule["hard"])
+                    penalty += overlap * rule["weight"] if not rule["hard"] else 0
+                if not blocked:
+                    rows.append([start, penalty])
+            selected = option_vars[(occurrence.id, option_index)]
+            if not rows:
+                model.add(selected == 0)
+                continue
+            cost = model.new_int_var(0, max(row[1] for row in rows), f"preference_{occurrence.id}_{option_index}")
+            model.add_allowed_assignments([start_vars[key], cost], rows).only_enforce_if(selected)
+            model.add(cost == 0).only_enforce_if(selected.Not())
+            preference_penalty_vars.append(cost)
 
     # Room and instructor overlap/availability use optional fixed-size intervals.
     # Presence is the conjunction of selected date and selected resource.
@@ -858,6 +862,432 @@ def solve_multi_day_week(
                         )
                         student_travel_constraints += 1
 
+    # Scoped student break rules extend the global LoadProfile.
+    #
+    # Hard rules increase the feasible minimum break.
+    # Soft rules preserve feasibility and penalize missing real break minutes.
+    # "Real break" excludes room-to-room travel when travel consumes break time.
+    student_break_preference_vars: list[cp_model.IntVar] = []
+    student_break_rule_constraints = 0
+
+    def break_rule_applies(
+        rule: dict,
+        *,
+        date: str,
+        left_group: TeachingGroup,
+        right_group: TeachingGroup,
+        shared_students: set[str],
+    ) -> bool:
+        if rule["date"] != date:
+            return False
+
+        student_id = rule.get("studentId")
+        if student_id and student_id not in shared_students:
+            return False
+
+        group_id = rule.get("groupId")
+        if group_id and group_id not in {left_group.id, right_group.id}:
+            return False
+
+        course_id = rule.get("courseId")
+        if course_id and course_id not in {left_group.course, right_group.course}:
+            return False
+
+        return True
+
+    for left_id, right_id in sorted(student_pairs):
+        left = occurrence_by_id[left_id]
+        right = occurrence_by_id[right_id]
+        left_group = group_by_id[left.teaching_group_id]
+        right_group = group_by_id[right.teaching_group_id]
+
+        shared_students = set(left_group.students) & set(right_group.students)
+        if not shared_students:
+            continue
+
+        common_dates = sorted(set(left.allowed_dates) & set(right.allowed_dates))
+
+        for date in common_dates:
+            left_date = date_vars.get((left_id, date))
+            right_date = date_vars.get((right_id, date))
+            left_start = start_vars.get((left_id, date))
+            right_start = start_vars.get((right_id, date))
+
+            if (
+                left_date is None
+                or right_date is None
+                or left_start is None
+                or right_start is None
+            ):
+                continue
+
+            applicable_rules = [
+                rule
+                for rule in student_break_rules
+                if break_rule_applies(
+                    rule,
+                    date=date,
+                    left_group=left_group,
+                    right_group=right_group,
+                    shared_students=shared_students,
+                )
+            ]
+
+            if not applicable_rules:
+                continue
+
+            order = order_var(left_id, right_id, date)
+
+            hard_minimum = max(
+                (
+                    int(rule["minBreakMinutes"])
+                    for rule in applicable_rules
+                    if rule["hard"]
+                ),
+                default=0,
+            )
+
+            # Existing LoadProfile remains the baseline hard requirement.
+            left_hard_break = max(student_profile.min_break_minutes, hard_minimum)
+            if left.duration_minutes > 45:
+                left_hard_break = max(
+                    left_hard_break,
+                    student_profile.min_break_after_double_minutes,
+                )
+
+            right_hard_break = max(student_profile.min_break_minutes, hard_minimum)
+            if right.duration_minutes > 45:
+                right_hard_break = max(
+                    right_hard_break,
+                    student_profile.min_break_after_double_minutes,
+                )
+
+            for left_room in room_ids_by_occurrence[left_id]:
+                left_room_var = room_vars[(left_id, left_room)]
+
+                for right_room in room_ids_by_occurrence[right_id]:
+                    right_room_var = room_vars[(right_id, right_room)]
+
+                    travel_lr = (
+                        _travel_minutes(left_room, right_room, travel_matrix)
+                        if student_profile.travel_consumes_break_time
+                        else 0
+                    )
+                    travel_rl = (
+                        _travel_minutes(right_room, left_room, travel_matrix)
+                        if student_profile.travel_consumes_break_time
+                        else 0
+                    )
+
+                    base_literals = [
+                        left_date,
+                        right_date,
+                        left_room_var,
+                        right_room_var,
+                    ]
+
+                    # Hard scoped break requirements.
+                    if hard_minimum > student_profile.min_break_minutes:
+                        model.add(
+                            left_start
+                            + left.duration_minutes
+                            + left_hard_break
+                            + travel_lr
+                            <= right_start
+                        ).only_enforce_if(base_literals + [order])
+
+                        model.add(
+                            right_start
+                            + right.duration_minutes
+                            + right_hard_break
+                            + travel_rl
+                            <= left_start
+                        ).only_enforce_if(base_literals + [order.Not()])
+
+                        student_break_rule_constraints += 2
+
+                    # Soft scoped break preferences.
+                    for rule_index, rule in enumerate(applicable_rules):
+                        if rule["hard"]:
+                            continue
+
+                        required = int(rule["minBreakMinutes"])
+                        weight = int(rule["weight"])
+
+                        if required <= 0 or weight <= 0:
+                            continue
+
+                        # Deficit when left is before right.
+                        deficit_lr = model.new_int_var(
+                            0,
+                            required,
+                            f"break_pref_lr_{left_id}_{right_id}_{date}_{left_room}_{right_room}_{rule_index}",
+                        )
+
+                        model.add(
+                            deficit_lr
+                            >= required
+                            - (
+                                right_start
+                                - left_start
+                                - left.duration_minutes
+                                - travel_lr
+                            )
+                        ).only_enforce_if(base_literals + [order])
+
+                        model.add(
+                            deficit_lr == 0
+                        ).only_enforce_if(
+                            [
+                                *base_literals,
+                                order.Not(),
+                            ]
+                        )
+
+                        # Deficit when right is before left.
+                        deficit_rl = model.new_int_var(
+                            0,
+                            required,
+                            f"break_pref_rl_{left_id}_{right_id}_{date}_{left_room}_{right_room}_{rule_index}",
+                        )
+
+                        model.add(
+                            deficit_rl
+                            >= required
+                            - (
+                                left_start
+                                - right_start
+                                - right.duration_minutes
+                                - travel_rl
+                            )
+                        ).only_enforce_if(base_literals + [order.Not()])
+
+                        model.add(
+                            deficit_rl == 0
+                        ).only_enforce_if(
+                            [
+                                *base_literals,
+                                order,
+                            ]
+                        )
+
+                        # If either lesson is not on this date / room combination,
+                        # this room-specific deficit must contribute nothing.
+                        model.add(deficit_lr == 0).only_enforce_if(left_date.Not())
+                        model.add(deficit_lr == 0).only_enforce_if(right_date.Not())
+                        model.add(deficit_lr == 0).only_enforce_if(left_room_var.Not())
+                        model.add(deficit_lr == 0).only_enforce_if(right_room_var.Not())
+
+                        model.add(deficit_rl == 0).only_enforce_if(left_date.Not())
+                        model.add(deficit_rl == 0).only_enforce_if(right_date.Not())
+                        model.add(deficit_rl == 0).only_enforce_if(left_room_var.Not())
+                        model.add(deficit_rl == 0).only_enforce_if(right_room_var.Not())
+
+                        student_break_preference_vars.extend(
+                            [
+                                deficit_lr * weight,
+                                deficit_rl * weight,
+                            ]
+                        )
+
+    # Instructor-specific break rules are conditional on the instructor
+    # actually being selected for both occurrences.
+    #
+    # Hard rules require real free time in addition to room-to-room travel.
+    # Soft rules contribute a deficit penalty while preserving feasibility.
+    instructor_break_preference_vars: list[cp_model.LinearExpr] = []
+    instructor_break_rule_constraints = 0
+
+    occurrence_ids = [occurrence.id for occurrence in occurrences]
+
+    for left_id, right_id in combinations(occurrence_ids, 2):
+        common_instructors = sorted(
+            set(instructor_ids_by_occurrence[left_id])
+            & set(instructor_ids_by_occurrence[right_id])
+        )
+        if not common_instructors:
+            continue
+
+        left = occurrence_by_id[left_id]
+        right = occurrence_by_id[right_id]
+
+        common_dates = sorted(
+            set(left.allowed_dates) & set(right.allowed_dates)
+        )
+        if not common_dates:
+            continue
+
+        for date in common_dates:
+            left_date = date_vars.get((left_id, date))
+            right_date = date_vars.get((right_id, date))
+            left_start = start_vars.get((left_id, date))
+            right_start = start_vars.get((right_id, date))
+
+            if (
+                left_date is None
+                or right_date is None
+                or left_start is None
+                or right_start is None
+            ):
+                continue
+
+            order = order_var(left_id, right_id, date)
+
+            for instructor_id in common_instructors:
+                applicable_rules = [
+                    rule
+                    for rule in instructor_break_rules
+                    if rule["date"] == date
+                    and rule["instructorId"] == instructor_id
+                ]
+                if not applicable_rules:
+                    continue
+
+                left_instructor = instructor_vars[(left_id, instructor_id)]
+                right_instructor = instructor_vars[(right_id, instructor_id)]
+
+                hard_minimum = max(
+                    (
+                        int(rule["minBreakMinutes"])
+                        for rule in applicable_rules
+                        if rule["hard"]
+                    ),
+                    default=0,
+                )
+
+                for left_room in room_ids_by_occurrence[left_id]:
+                    left_room_var = room_vars[(left_id, left_room)]
+
+                    for right_room in room_ids_by_occurrence[right_id]:
+                        right_room_var = room_vars[(right_id, right_room)]
+
+                        travel_lr = _travel_minutes(
+                            left_room,
+                            right_room,
+                            travel_matrix,
+                        )
+                        travel_rl = _travel_minutes(
+                            right_room,
+                            left_room,
+                            travel_matrix,
+                        )
+
+                        base_literals = [
+                            left_date,
+                            right_date,
+                            left_instructor,
+                            right_instructor,
+                            left_room_var,
+                            right_room_var,
+                        ]
+
+                        if hard_minimum > 0:
+                            model.add(
+                                left_start
+                                + left.duration_minutes
+                                + travel_lr
+                                + hard_minimum
+                                <= right_start
+                            ).only_enforce_if(base_literals + [order])
+
+                            model.add(
+                                right_start
+                                + right.duration_minutes
+                                + travel_rl
+                                + hard_minimum
+                                <= left_start
+                            ).only_enforce_if(
+                                base_literals + [order.Not()]
+                            )
+
+                            instructor_break_rule_constraints += 2
+
+                        for rule_index, rule in enumerate(applicable_rules):
+                            if rule["hard"]:
+                                continue
+
+                            required = int(rule["minBreakMinutes"])
+                            weight = int(rule["weight"])
+
+                            if required <= 0 or weight <= 0:
+                                continue
+
+                            deficit_lr = model.new_int_var(
+                                0,
+                                required,
+                                (
+                                    f"instructor_break_lr_{left_id}_{right_id}_"
+                                    f"{date}_{instructor_id}_{left_room}_"
+                                    f"{right_room}_{rule_index}"
+                                ),
+                            )
+
+                            model.add(
+                                deficit_lr
+                                >= required
+                                - (
+                                    right_start
+                                    - left_start
+                                    - left.duration_minutes
+                                    - travel_lr
+                                )
+                            ).only_enforce_if(base_literals + [order])
+
+                            model.add(deficit_lr == 0).only_enforce_if(
+                                [*base_literals, order.Not()]
+                            )
+
+                            deficit_rl = model.new_int_var(
+                                0,
+                                required,
+                                (
+                                    f"instructor_break_rl_{left_id}_{right_id}_"
+                                    f"{date}_{instructor_id}_{left_room}_"
+                                    f"{right_room}_{rule_index}"
+                                ),
+                            )
+
+                            model.add(
+                                deficit_rl
+                                >= required
+                                - (
+                                    left_start
+                                    - right_start
+                                    - right.duration_minutes
+                                    - travel_rl
+                                )
+                            ).only_enforce_if(
+                                base_literals + [order.Not()]
+                            )
+
+                            model.add(deficit_rl == 0).only_enforce_if(
+                                [*base_literals, order]
+                            )
+
+                            # Zero the room-specific term whenever this
+                            # occurrence/resource combination is not selected.
+                            for literal in (
+                                left_date,
+                                right_date,
+                                left_instructor,
+                                right_instructor,
+                                left_room_var,
+                                right_room_var,
+                            ):
+                                model.add(deficit_lr == 0).only_enforce_if(
+                                    literal.Not()
+                                )
+                                model.add(deficit_rl == 0).only_enforce_if(
+                                    literal.Not()
+                                )
+
+                            instructor_break_preference_vars.extend(
+                                [
+                                    deficit_lr * weight,
+                                    deficit_rl * weight,
+                                ]
+                            )
+
     # Instructor overlap is already covered by AddNoOverlap. The constraints
     # below add only room-to-room travel time when the same instructor is chosen
     # for both occurrences.
@@ -998,7 +1428,11 @@ def solve_multi_day_week(
         "studentBundleCount": len(student_bundles),
         "studentBreakConstraintCount": student_break_constraints,
         "studentTravelConstraintCount": student_travel_constraints,
+        "studentBreakRuleConstraintCount": student_break_rule_constraints,
+        "studentBreakPreferenceTermCount": len(student_break_preference_vars),
         "instructorTravelConstraintCount": instructor_travel_constraints,
+        "instructorBreakRuleConstraintCount": instructor_break_rule_constraints,
+        "instructorBreakPreferenceTermCount": len(instructor_break_preference_vars),
         "candidateSeconds": round(preparation_seconds, 6),
         "modelSeconds": round(model_seconds, 6),
         "feasibilitySeconds": round(feasibility_seconds, 6),
@@ -1023,6 +1457,191 @@ def solve_multi_day_week(
             f"Optimizing room, staffing and time preferences."
         ),
     )
+
+    def evaluate_student_break_preferences(
+        sessions: list[MultiDayScheduledSession],
+    ) -> tuple[int, list[dict[str, object]]]:
+        """Recalculate soft break cost from a concrete timetable.
+
+        This mirrors the CP-SAT objective so the reported objective and
+        diagnostics describe the same quality criteria that were optimized.
+        """
+        total_penalty = 0
+        violations: list[dict[str, object]] = []
+
+        for left_session, right_session in combinations(sessions, 2):
+            if left_session.date != right_session.date:
+                continue
+
+            shared_students = (
+                set(left_session.group.students)
+                & set(right_session.group.students)
+            )
+            if not shared_students:
+                continue
+
+            if (
+                left_session.start,
+                left_session.end,
+                left_session.occurrence_id,
+            ) <= (
+                right_session.start,
+                right_session.end,
+                right_session.occurrence_id,
+            ):
+                first = left_session
+                second = right_session
+            else:
+                first = right_session
+                second = left_session
+
+            applicable_rules = [
+                rule
+                for rule in student_break_rules
+                if not rule["hard"]
+                and break_rule_applies(
+                    rule,
+                    date=first.date,
+                    left_group=first.group,
+                    right_group=second.group,
+                    shared_students=shared_students,
+                )
+            ]
+
+            if not applicable_rules:
+                continue
+
+            travel_minutes = (
+                _travel_minutes(
+                    first.room.id,
+                    second.room.id,
+                    travel_matrix,
+                )
+                if student_profile.travel_consumes_break_time
+                else 0
+            )
+
+            real_break = max(
+                0,
+                second.start - first.end - travel_minutes,
+            )
+
+            for rule in applicable_rules:
+                required = int(rule["minBreakMinutes"])
+                deficit = max(0, required - real_break)
+
+                if deficit <= 0:
+                    continue
+
+                penalty = deficit * int(rule["weight"])
+                total_penalty += penalty
+
+                violations.append(
+                    {
+                        "ruleId": rule["ruleId"],
+                        "name": rule["name"],
+                        "date": first.date,
+                        "firstOccurrenceId": first.occurrence_id,
+                        "secondOccurrenceId": second.occurrence_id,
+                        "firstGroupId": first.group.id,
+                        "secondGroupId": second.group.id,
+                        "studentId": rule.get("studentId"),
+                        "requiredMinutes": required,
+                        "actualBreakMinutes": real_break,
+                        "travelMinutes": travel_minutes,
+                        "deficitMinutes": deficit,
+                        "penalty": penalty,
+                    }
+                )
+
+        return total_penalty, violations
+
+
+    def evaluate_instructor_break_preferences(
+        sessions: list[MultiDayScheduledSession],
+    ) -> tuple[int, list[dict[str, object]]]:
+        """Evaluate soft instructor-break rules for a concrete timetable."""
+        total_penalty = 0
+        violations: list[dict[str, object]] = []
+
+        for left_session, right_session in combinations(sessions, 2):
+            if left_session.date != right_session.date:
+                continue
+
+            shared_instructors = {
+                instructor.id
+                for instructor in left_session.instructors
+            } & {
+                instructor.id
+                for instructor in right_session.instructors
+            }
+
+            if not shared_instructors:
+                continue
+
+            if (
+                left_session.start,
+                left_session.end,
+                left_session.occurrence_id,
+            ) <= (
+                right_session.start,
+                right_session.end,
+                right_session.occurrence_id,
+            ):
+                first = left_session
+                second = right_session
+            else:
+                first = right_session
+                second = left_session
+
+            travel_minutes = _travel_minutes(
+                first.room.id,
+                second.room.id,
+                travel_matrix,
+            )
+            real_break = max(
+                0,
+                second.start - first.end - travel_minutes,
+            )
+
+            for instructor_id in shared_instructors:
+                for rule in instructor_break_rules:
+                    if (
+                        rule["hard"]
+                        or rule["date"] != first.date
+                        or rule["instructorId"] != instructor_id
+                    ):
+                        continue
+
+                    required = int(rule["minBreakMinutes"])
+                    deficit = max(0, required - real_break)
+
+                    if deficit <= 0:
+                        continue
+
+                    penalty = deficit * int(rule["weight"])
+                    total_penalty += penalty
+
+                    violations.append(
+                        {
+                            "ruleId": rule["ruleId"],
+                            "name": rule["name"],
+                            "date": first.date,
+                            "instructorId": instructor_id,
+                            "firstOccurrenceId": first.occurrence_id,
+                            "secondOccurrenceId": second.occurrence_id,
+                            "firstGroupId": first.group.id,
+                            "secondGroupId": second.group.id,
+                            "requiredMinutes": required,
+                            "actualBreakMinutes": real_break,
+                            "travelMinutes": travel_minutes,
+                            "deficitMinutes": deficit,
+                            "penalty": penalty,
+                        }
+                    )
+
+        return total_penalty, violations
+
 
     # Save the first solution before the optimization pass. If the remaining
     # time budget is too small or optimization returns UNKNOWN, this solution is
@@ -1095,6 +1714,12 @@ def solve_multi_day_week(
 
             objective += selected_option.assignment_penalty
             objective += max(0, start - 8 * 60) // 15
+            for rule in placement_rules:
+                if (rule["date"] == selected_date and not rule["hard"]
+                    and (not rule.get("groupId") or rule["groupId"] == group.id)
+                    and (not rule.get("roomId") or rule["roomId"] == selected_option.room_id)
+                    and (not rule.get("instructorId") or rule["instructorId"] in selected_option.instructor_ids)):
+                    objective += max(0, min(start + occurrence.duration_minutes, rule["endMinute"]) - max(start, rule["startMinute"])) * rule["weight"]
 
         scheduled.sort(
             key=lambda session: (
@@ -1104,6 +1729,14 @@ def solve_multi_day_week(
                 session.occurrence_id,
             )
         )
+
+        break_penalty, _ = evaluate_student_break_preferences(scheduled)
+        objective += break_penalty
+
+        instructor_break_penalty, _ = evaluate_instructor_break_preferences(
+            scheduled
+        )
+        objective += instructor_break_penalty
 
         return scheduled, objective
 
@@ -1141,7 +1774,12 @@ def solve_multi_day_week(
                     * option_vars[(occurrence.id, option_index)]
                 )
 
-        model.minimize(sum(objective_terms))
+        model.minimize(
+            sum(objective_terms)
+            + sum(preference_penalty_vars)
+            + sum(student_break_preference_vars)
+            + sum(instructor_break_preference_vars)
+        )
 
         optimization_solver = cp_model.CpSolver()
         optimization_solver.parameters.max_time_in_seconds = remaining_seconds
@@ -1172,6 +1810,32 @@ def solve_multi_day_week(
         perf_counter() - started,
         6,
     )
+
+    violations = []
+    for session in final_sessions:
+        for rule in placement_rules:
+            if (rule["hard"] or rule["date"] != session.date
+                or (rule.get("groupId") and rule["groupId"] != session.group.id)
+                or (rule.get("roomId") and rule["roomId"] != session.room.id)
+                or (rule.get("instructorId") and rule["instructorId"] not in [i.id for i in session.instructors])):
+                continue
+            minutes = max(0, min(session.end, rule["endMinute"]) - max(session.start, rule["startMinute"]))
+            if minutes:
+                violations.append({"ruleId": rule["ruleId"], "name": rule["name"],
+                    "date": session.date, "occurrenceId": session.occurrence_id,
+                    "groupId": session.group.id, "instructorId": rule.get("instructorId"),
+                    "roomId": session.room.id, "minutes": minutes, "penalty": minutes * rule["weight"]})
+    diagnostics["preferenceViolations"] = violations
+
+    _, student_break_violations = evaluate_student_break_preferences(
+        final_sessions
+    )
+    diagnostics["studentBreakViolations"] = student_break_violations
+
+    _, instructor_break_violations = evaluate_instructor_break_preferences(
+        final_sessions
+    )
+    diagnostics["instructorBreakViolations"] = instructor_break_violations
 
     return MultiDayScheduleResult(
         status=final_status,

@@ -23,6 +23,9 @@ def _domain_resources(payload: SolverInput):
             courses=frozenset(item.course_ids),
             course_penalties=dict(item.course_penalties),
             qualification_levels=dict(item.qualification_levels),
+            course_levels=dict(item.course_levels),
+            course_validity=dict(item.course_validity),
+            qualification_validity=dict(item.qualification_validity),
         )
         for item in payload.instructors
     ]
@@ -38,6 +41,11 @@ def _domain_resources(payload: SolverInput):
                     role=role.role,
                     required_qualification_id=role.required_qualification_id,
                     minimum_qualification_level=role.minimum_qualification_level,
+                    minimum_course_level=role.minimum_course_level,
+                    preferred_course_level=role.preferred_course_level,
+                    minimum_student_count=role.minimum_student_count,
+                    hard=role.hard, weight=role.weight,
+                    valid_from=role.valid_from, valid_to=role.valid_to,
                 )
                 for role in item.staffing_roles
             ),
@@ -60,6 +68,11 @@ def _domain_resources(payload: SolverInput):
                     role=role.role,
                     required_qualification_id=role.required_qualification_id,
                     minimum_qualification_level=role.minimum_qualification_level,
+                    minimum_course_level=role.minimum_course_level,
+                    preferred_course_level=role.preferred_course_level,
+                    minimum_student_count=role.minimum_student_count,
+                    hard=role.hard, weight=role.weight,
+                    valid_from=role.valid_from, valid_to=role.valid_to,
                 )
                 for role in item.staffing_roles
             ),
@@ -257,6 +270,9 @@ def _run_planning_horizon(
             student_blocks=[block for block in student_blocks if block.date in allowed_dates],
             room_blocks=[block for block in room_blocks if block.date in allowed_dates],
             progress_callback=week_progress,
+            placement_rules=list(payload.placement_rules),
+            student_break_rules=list(payload.student_break_rules),
+            instructor_break_rules=list(payload.instructor_break_rules),
         )
 
         week_statuses[week_start] = result.status
@@ -364,6 +380,6 @@ def run_solver(
     payload: SolverInput,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> SolverOutput:
-    if payload.schema_version in {"1.2", "1.3"}:
+    if payload.schema_version in {"1.2", "1.3", "1.4"}:
         return _run_planning_horizon(payload, progress_callback)
     return _run_single_day(payload)

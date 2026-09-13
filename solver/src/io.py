@@ -21,7 +21,7 @@ from .contracts import (
 )
 
 
-SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2", "1.3"}
+SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2", "1.3", "1.4"}
 
 
 class SolverInputError(ValueError):
@@ -54,6 +54,113 @@ def _resource_blocks(items: Any) -> tuple[ResourceBlockInput, ...]:
     )
 
 
+def _placement_rules(items: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(items, list):
+        raise SolverInputError("placementRules must be an array")
+    result = []
+    from datetime import date
+    for item in items:
+        if not isinstance(item, dict):
+            raise SolverInputError("Invalid placement rule")
+        for key in ("ruleId", "name", "date"):
+            if not isinstance(item.get(key), str) or not item[key]:
+                raise SolverInputError(f"Invalid placement rule {key}")
+        try:
+            date.fromisoformat(item["date"])
+        except ValueError as exc:
+            raise SolverInputError("Invalid placement rule date") from exc
+        if any(type(item.get(key)) is not int for key in ("startMinute", "endMinute", "weight")):
+            raise SolverInputError("Placement times and weights must be integers")
+        if not 0 <= item["startMinute"] < item["endMinute"] <= 1440 or item["weight"] < 0:
+            raise SolverInputError("Invalid placement interval or weight")
+        if type(item.get("hard")) is not bool:
+            raise SolverInputError("Placement hard must be boolean")
+        result.append(dict(item))
+    return tuple(result)
+
+
+def _student_break_rules(items: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(items, list):
+        raise SolverInputError("studentBreakRules must be an array")
+
+    result: list[dict[str, Any]] = []
+
+    from datetime import date
+
+    for item in items:
+        if not isinstance(item, dict):
+            raise SolverInputError("Invalid student break rule")
+
+        for key in ("ruleId", "name", "date"):
+            if not isinstance(item.get(key), str) or not item[key]:
+                raise SolverInputError(f"Invalid student break rule {key}")
+
+        try:
+            date.fromisoformat(item["date"])
+        except ValueError as exc:
+            raise SolverInputError("Invalid student break rule date") from exc
+
+        if type(item.get("minBreakMinutes")) is not int:
+            raise SolverInputError("Student break minimum must be an integer")
+
+        if not 0 <= item["minBreakMinutes"] <= 240:
+            raise SolverInputError("Student break minimum must be 0-240 minutes")
+
+        if type(item.get("weight")) is not int or item["weight"] < 0:
+            raise SolverInputError("Student break weight must be a non-negative integer")
+
+        if type(item.get("hard")) is not bool:
+            raise SolverInputError("Student break hard must be boolean")
+
+        for key in ("studentId", "groupId", "courseId"):
+            if key in item and item[key] is not None and not isinstance(item[key], str):
+                raise SolverInputError(f"Invalid student break rule {key}")
+
+        result.append(dict(item))
+
+    return tuple(result)
+
+
+def _instructor_break_rules(items: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(items, list):
+        raise SolverInputError("instructorBreakRules must be an array")
+
+    result: list[dict[str, Any]] = []
+
+    from datetime import date
+
+    for item in items:
+        if not isinstance(item, dict):
+            raise SolverInputError("Invalid instructor break rule")
+
+        for key in ("ruleId", "name", "date", "instructorId"):
+            if not isinstance(item.get(key), str) or not item[key]:
+                raise SolverInputError(f"Invalid instructor break rule {key}")
+
+        try:
+            date.fromisoformat(item["date"])
+        except ValueError as exc:
+            raise SolverInputError("Invalid instructor break rule date") from exc
+
+        if type(item.get("minBreakMinutes")) is not int:
+            raise SolverInputError("Instructor break minimum must be an integer")
+
+        if not 0 <= item["minBreakMinutes"] <= 240:
+            raise SolverInputError("Instructor break minimum must be 0-240 minutes")
+
+        if type(item.get("weight")) is not int or item["weight"] < 0:
+            raise SolverInputError(
+                "Instructor break weight must be a non-negative integer"
+            )
+
+        if type(item.get("hard")) is not bool:
+            raise SolverInputError("Instructor break hard must be boolean")
+
+        result.append(dict(item))
+
+    return tuple(result)
+
+
 def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
     schema_version = str(_required(data, "schemaVersion"))
 
@@ -70,6 +177,9 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
             course_ids=tuple(str(value) for value in item["courseIds"]),
             course_penalties=_int_map(item.get("coursePenalties")),
             qualification_levels=_int_map(item.get("qualificationLevels")),
+            course_levels=_int_map(item.get("courseLevels")),
+            course_validity=dict(item.get("courseValidity", {})),
+            qualification_validity=dict(item.get("qualificationValidity", {})),
         )
         for item in _required(data, "instructors")
     )
@@ -83,6 +193,13 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
                 StaffingRoleInput(
                     id=str(role["id"]),
                     role=str(role["role"]),
+                    minimum_course_level=role.get("minimumCourseLevel"),
+                    preferred_course_level=role.get("preferredCourseLevel"),
+                    minimum_student_count=int(role.get("minimumStudentCount") or 0),
+                    hard=role.get("hard", True),
+                    weight=int(role.get("weight", 100)),
+                    valid_from=role.get("validFrom"),
+                    valid_to=role.get("validTo"),
                     required_qualification_id=(
                         str(role["requiredQualificationId"])
                         if role.get("requiredQualificationId") is not None
@@ -113,6 +230,13 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
                 StaffingRoleInput(
                     id=str(role["id"]),
                     role=str(role["role"]),
+                    minimum_course_level=role.get("minimumCourseLevel"),
+                    preferred_course_level=role.get("preferredCourseLevel"),
+                    minimum_student_count=int(role.get("minimumStudentCount") or 0),
+                    hard=role.get("hard", True),
+                    weight=int(role.get("weight", 100)),
+                    valid_from=role.get("validFrom"),
+                    valid_to=role.get("validTo"),
                     required_qualification_id=(
                         str(role["requiredQualificationId"])
                         if role.get("requiredQualificationId") is not None
@@ -159,7 +283,7 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
     student_blocks: tuple[ResourceBlockInput, ...] = ()
     room_blocks: tuple[ResourceBlockInput, ...] = ()
 
-    if schema_version in {"1.2", "1.3"}:
+    if schema_version in {"1.2", "1.3", "1.4"}:
         window = _required(data, "planningWindow")
         planning_window = PlanningWindowInput(
             as_of_date=str(_required(window, "asOfDate")),
@@ -218,6 +342,11 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
         instructor_blocks=instructor_blocks,
         student_blocks=student_blocks,
         room_blocks=room_blocks,
+        placement_rules=_placement_rules(data.get("placementRules", [])),
+        student_break_rules=_student_break_rules(data.get("studentBreakRules", [])),
+        instructor_break_rules=_instructor_break_rules(
+            data.get("instructorBreakRules", [])
+        ),
     )
 
 

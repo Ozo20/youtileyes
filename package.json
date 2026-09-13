@@ -31,7 +31,9 @@
     "planning:check:multi-instructor-persistence": "tsx scripts/check-multi-instructor-persistence.ts",
     "solver:job": "tsx scripts/process-solver-job.ts",
     "solver:job:queued": "tsx scripts/process-next-solver-job.ts",
-    "solver:recovery-case": "tsx scripts/process-recovery-case-job.ts"
+    "solver:recovery-case": "tsx scripts/process-recovery-case-job.ts",
+    "solver:test:preferences:1.4": "PYTHONPATH=. solver/.venv/bin/python solver/tests/preferences_v1_4.py",
+    "planning:test:preferences": "tsx scripts/test-preference-compiler.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

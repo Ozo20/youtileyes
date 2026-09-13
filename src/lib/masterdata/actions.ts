@@ -841,6 +841,12 @@ export async function createStaffingRequirement(
     "requiredQualificationId",
   );
   const count = positiveInt(formData, "count");
+  const minimumCourseLevel = optionalInt(formData, "minimumCourseLevel");
+  const preferredCourseLevel = optionalInt(formData, "preferredCourseLevel");
+  for (const level of [minimumCourseLevel, preferredCourseLevel]) {
+    if (level !== null && (!Number.isInteger(level) || level < 1 || level > 100)) throw new Error("Course level must be 1–100.");
+  }
+  if (minimumCourseLevel !== null && preferredCourseLevel !== null && preferredCourseLevel < minimumCourseLevel) throw new Error("Preferred level cannot be below minimum.");
   const minimumQualificationLevel = optionalInt(
     formData,
     "minimumQualificationLevel",
@@ -864,6 +870,8 @@ export async function createStaffingRequirement(
         count,
         requiredQualificationId,
         minimumQualificationLevel,
+        minimumCourseLevel,
+        preferredCourseLevel,
         minimumStudentCount,
         hard,
         active: true,

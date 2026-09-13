@@ -169,14 +169,17 @@ enum RequirementUnit {
 }
 
 model Tenant {
-  id                       String       @id @default(uuid())
+  roomFeatures             RoomFeature[]
+  roomFeatureValues        RoomFeatureValue[]
+  roomRequirements         RoomRequirement[]
+  id                       String             @id @default(uuid())
   name                     String
-  code                     String       @unique
-  status                   TenantStatus @default(ACTIVE)
-  timezone                 String       @default("Europe/Oslo")
-  recoveryApprovalRequired Boolean      @default(true)
-  createdAt                DateTime     @default(now())
-  updatedAt                DateTime     @updatedAt
+  code                     String             @unique
+  status                   TenantStatus       @default(ACTIVE)
+  timezone                 String             @default("Europe/Oslo")
+  recoveryApprovalRequired Boolean            @default(true)
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
 
   organisationUnits              OrganisationUnit[]
   locations                      Location[]
@@ -349,17 +352,18 @@ model LocationRelation {
 }
 
 model Room {
-  id         String    @id @default(uuid())
+  features   RoomFeatureValue[]
+  id         String             @id @default(uuid())
   tenantId   String
   locationId String
   name       String
   code       String?
   capacity   Int
-  active     Boolean   @default(true)
+  active     Boolean            @default(true)
   validFrom  DateTime?
   validTo    DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   location Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
@@ -501,19 +505,20 @@ model EventLog {
 }
 
 model Student {
-  id                        String       @id @default(uuid())
+  roomRequirements          RoomRequirement[]
+  id                        String            @id @default(uuid())
   tenantId                  String
   externalId                String?
   sourceSystem              String?
   firstName                 String
   lastName                  String
-  status                    PersonStatus @default(ACTIVE)
+  status                    PersonStatus      @default(ACTIVE)
   primaryOrganisationUnitId String?
   primaryLocationId         String?
   activeFrom                DateTime?
   activeTo                  DateTime?
-  createdAt                 DateTime     @default(now())
-  updatedAt                 DateTime     @updatedAt
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
 
   tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   primaryOrganisationUnit OrganisationUnit? @relation("StudentPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
@@ -541,21 +546,22 @@ model Student {
 }
 
 model Instructor {
-  id                        String       @id @default(uuid())
+  roomRequirements          RoomRequirement[]
+  id                        String            @id @default(uuid())
   tenantId                  String
   externalId                String?
   sourceSystem              String?
   firstName                 String
   lastName                  String
-  status                    PersonStatus @default(ACTIVE)
-  employmentPercentage      Decimal?     @db.Decimal(5, 2)
+  status                    PersonStatus      @default(ACTIVE)
+  employmentPercentage      Decimal?          @db.Decimal(5, 2)
   maxTeachingMinutesPerWeek Int?
   primaryOrganisationUnitId String?
   primaryLocationId         String?
   activeFrom                DateTime?
   activeTo                  DateTime?
-  createdAt                 DateTime     @default(now())
-  updatedAt                 DateTime     @updatedAt
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
 
   tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   primaryOrganisationUnit OrganisationUnit? @relation("InstructorPrimaryOrganisation", fields: [primaryOrganisationUnitId], references: [id], onDelete: Restrict)
@@ -584,6 +590,7 @@ model Instructor {
 }
 
 model Course {
+  roomRequirements        RoomRequirement[]
   id                      String             @id @default(uuid())
   tenantId                String
   externalId              String?
@@ -618,17 +625,20 @@ model Course {
 }
 
 model InstructorCourse {
-  id                 String             @id @default(uuid())
+  id                 String                  @id @default(uuid())
   tenantId           String
   instructorId       String
   courseId           String
-  qualificationLevel QualificationLevel @default(PRIMARY)
-  priority           Int                @default(100)
-  active             Boolean            @default(true)
+  competenceLevel    Int?
+  qualificationLevel QualificationLevel      @default(PRIMARY)
+  priority           Int                     @default(100)
+  preference         PlanningPreferenceLevel @default(NEUTRAL)
+  preferenceWeight   Int                     @default(100)
+  active             Boolean                 @default(true)
   validFrom          DateTime?
   validTo            DateTime?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
 
   tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
@@ -779,6 +789,8 @@ model StaffingRequirement {
   role                      StaffingRoleType
   count                     Int                       @default(1)
   requiredQualificationId   String?
+  minimumCourseLevel        Int?
+  preferredCourseLevel      Int?
   minimumQualificationLevel Int?
   minimumStudentCount       Int?
   priority                  Int                       @default(100)
@@ -803,6 +815,7 @@ model StaffingRequirement {
 }
 
 model StudentCohort {
+  planningRules      PlanningRule[]
   id                 String            @id @default(uuid())
   tenantId           String
   academicPeriodId   String?
@@ -1155,6 +1168,7 @@ enum PlanningRuleType {
   MAX_CONTINUOUS_TEACHING_MINUTES
   MIN_BREAK_MINUTES
   MIN_LUNCH_MINUTES
+  AVOID_TIME_WINDOW
   MAX_SESSIONS_PER_DAY
   MIN_REAL_BREAK_MINUTES
   MIN_BREAK_AFTER_SESSION
@@ -1167,6 +1181,7 @@ enum PlanningRuleType {
 }
 
 enum PlanningRuleScopeType {
+  STUDENT_COHORT
   TENANT
   ORGANISATION_UNIT
   LOCATION
@@ -1216,6 +1231,12 @@ model LoadProfile {
 }
 
 model PlanningRule {
+  weekdays           Int[]                      @default([])
+  startMinute        Int?
+  endMinute          Int?
+  audience           String                     @default("ALL")
+  studentCohortId    String?
+  studentCohort      StudentCohort?             @relation(fields: [studentCohortId], references: [id], onDelete: Cascade)
   id                 String                     @id @default(uuid())
   tenantId           String
   name               String
@@ -1955,4 +1976,51 @@ model PlanDistribution {
   @@index([tenantId, planId, generatedAt])
   @@index([tenantId, format, generatedAt])
   @@index([tenantId, status, generatedAt])
+}
+
+// Quantities also represent boolean features (one = present).
+model RoomFeature {
+  id           String             @id @default(uuid())
+  tenantId     String
+  code         String
+  name         String
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  values       RoomFeatureValue[]
+  requirements RoomRequirement[]
+
+  @@unique([tenantId, code])
+}
+
+model RoomFeatureValue {
+  id        String      @id @default(uuid())
+  tenantId  String
+  roomId    String
+  featureId String
+  quantity  Int         @default(1)
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  room      Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  feature   RoomFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, roomId, featureId])
+}
+
+model RoomRequirement {
+  id           String      @id @default(uuid())
+  tenantId     String
+  featureId    String
+  courseId     String?
+  studentId    String?
+  instructorId String?
+  quantity     Int         @default(1)
+  perStudent   Boolean     @default(false)
+  hard         Boolean     @default(true)
+  weight       Int         @default(100)
+  active       Boolean     @default(true)
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  feature      RoomFeature @relation(fields: [featureId], references: [id], onDelete: Restrict)
+  course       Course?     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  student      Student?    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  instructor   Instructor? @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, active])
 }
