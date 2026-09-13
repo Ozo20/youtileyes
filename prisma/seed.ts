@@ -87,19 +87,51 @@ async function main() {
     },
   });
 
-  const location = await prisma.location.upsert({
+  const existingCampusA = await prisma.location.findUnique({
     where: {
       tenantId_code: {
         tenantId: tenant.id,
         code: "CAMPUS-A",
       },
     },
-    update: {},
+  });
+
+  const existingCampusACode = await prisma.location.findUnique({
+    where: {
+      tenantId_code: {
+        tenantId: tenant.id,
+        code: "CA",
+      },
+    },
+  });
+
+  if (existingCampusA && !existingCampusACode) {
+    await prisma.location.update({
+      where: { id: existingCampusA.id },
+      data: { code: "CA" },
+    });
+  }
+
+  const location = await prisma.location.upsert({
+    where: {
+      tenantId_code: {
+        tenantId: tenant.id,
+        code: "CA",
+      },
+    },
+    update: {
+      type: "CAMPUS",
+      name: "Campus A",
+      city: "Trondheim",
+      countryCode: "NO",
+      timezone: "Europe/Oslo",
+      active: true,
+    },
     create: {
       tenantId: tenant.id,
       type: "CAMPUS",
       name: "Campus A",
-      code: "CAMPUS-A",
+      code: "CA",
       city: "Trondheim",
       countryCode: "NO",
       timezone: "Europe/Oslo",
@@ -107,10 +139,41 @@ async function main() {
   });
 
   const roomDefinitions = [
-    { code: "A10", capacity: 10 },
-    { code: "A11", capacity: 10 },
-    { code: "B14", capacity: 10 },
+    { seedKey: "A10", code: "CA-A10", name: "A10", capacity: 10 },
+    { seedKey: "A11", code: "CA-A11", name: "A11", capacity: 10 },
+    { seedKey: "B14", code: "CA-B14", name: "B14", capacity: 10 },
   ] as const;
+
+  for (const definition of roomDefinitions) {
+    const legacyRoom = await prisma.room.findUnique({
+      where: {
+        tenantId_code: {
+          tenantId: tenant.id,
+          code: definition.seedKey,
+        },
+      },
+    });
+
+    const currentRoom = await prisma.room.findUnique({
+      where: {
+        tenantId_code: {
+          tenantId: tenant.id,
+          code: definition.code,
+        },
+      },
+    });
+
+    if (legacyRoom && !currentRoom) {
+      await prisma.room.update({
+        where: { id: legacyRoom.id },
+        data: {
+          code: definition.code,
+          name: definition.name,
+          locationId: location.id,
+        },
+      });
+    }
+  }
 
   const rooms = await Promise.all(
     roomDefinitions.map((definition) =>
@@ -122,6 +185,7 @@ async function main() {
           },
         },
         update: {
+          name: definition.name,
           locationId: location.id,
           capacity: definition.capacity,
           active: true,
@@ -129,7 +193,7 @@ async function main() {
         create: {
           tenantId: tenant.id,
           locationId: location.id,
-          name: definition.code,
+          name: definition.name,
           code: definition.code,
           capacity: definition.capacity,
         },
@@ -138,7 +202,10 @@ async function main() {
   );
 
   const roomByCode = Object.fromEntries(
-    rooms.map((room) => [room.code!, room]),
+    roomDefinitions.map((definition, index) => [
+      definition.seedKey,
+      rooms[index],
+    ]),
   );
 
   const courseDefinitions = [
@@ -258,7 +325,11 @@ async function main() {
     ["T2", "TEACHING_SUPPORT", 2],
   ] as const;
 
-  for (const [instructorExternalId, qualificationCode, level] of instructorQualificationDefinitions) {
+  for (const [
+    instructorExternalId,
+    qualificationCode,
+    level,
+  ] of instructorQualificationDefinitions) {
     await prisma.instructorQualification.upsert({
       where: {
         tenantId_instructorId_qualificationId: {
@@ -290,7 +361,12 @@ async function main() {
     ["T2", "FYS", "SUPPORT", 100],
   ] as const;
 
-  for (const [instructorExternalId, courseCode, qualificationLevel, priority] of instructorCourses) {
+  for (const [
+    instructorExternalId,
+    courseCode,
+    qualificationLevel,
+    priority,
+  ] of instructorCourses) {
     await prisma.instructorCourse.upsert({
       where: {
         tenantId_instructorId_courseId: {
@@ -552,7 +628,6 @@ async function main() {
     },
   });
 
-
   const teachingRequirementDefinitions = [
     ["G1", 1620, 90, 180],
     ["G2", 810, 45, 90],
@@ -560,7 +635,12 @@ async function main() {
     ["G4", 810, 45, 90],
   ] as const;
 
-  for (const [groupCode, totalMinutes, preferredWeeklyMinutes, maxWeeklyMinutes] of teachingRequirementDefinitions) {
+  for (const [
+    groupCode,
+    totalMinutes,
+    preferredWeeklyMinutes,
+    maxWeeklyMinutes,
+  ] of teachingRequirementDefinitions) {
     await prisma.teachingRequirement.upsert({
       where: {
         tenantId_planId_teachingGroupId: {
@@ -615,7 +695,8 @@ async function main() {
         impactMode: "BLOCK",
         startAt: activityStart,
         endAt: activityEnd,
-        description: "Demo cohort activity. Ordinary teaching is blocked for ST2A.",
+        description:
+          "Demo cohort activity. Ordinary teaching is blocked for ST2A.",
       },
     });
   } else {
@@ -627,7 +708,8 @@ async function main() {
         status: "ACTIVE",
         impactMode: "BLOCK",
         name: "ST2A activity day",
-        description: "Demo cohort activity. Ordinary teaching is blocked for ST2A.",
+        description:
+          "Demo cohort activity. Ordinary teaching is blocked for ST2A.",
         startAt: activityStart,
         endAt: activityEnd,
       },
@@ -649,7 +731,12 @@ async function main() {
     ["B14", "NOR", "ALLOWED", 20],
   ] as const;
 
-  for (const [roomCode, courseCode, suitability, penalty] of roomCoursePreferences) {
+  for (const [
+    roomCode,
+    courseCode,
+    suitability,
+    penalty,
+  ] of roomCoursePreferences) {
     await prisma.roomCoursePreference.upsert({
       where: {
         tenantId_roomId_courseId: {
@@ -709,7 +796,13 @@ async function main() {
     ["T2", "G1", "AVOID", 120, "PLANNING_CONSIDERATION"],
   ] as const;
 
-  for (const [instructorExternalId, groupCode, preference, weight, reasonCode] of instructorGroupPreferences) {
+  for (const [
+    instructorExternalId,
+    groupCode,
+    preference,
+    weight,
+    reasonCode,
+  ] of instructorGroupPreferences) {
     await prisma.instructorTeachingGroupPreference.upsert({
       where: {
         tenantId_instructorId_teachingGroupId: {
@@ -768,7 +861,6 @@ async function main() {
     },
   });
 
-
   // ---------------------------------------------------------------------------
   // Expanded demo dataset
   // ---------------------------------------------------------------------------
@@ -790,14 +882,14 @@ async function main() {
   // safe to run repeatedly.
 
   const expandedRoomDefinitions = [
-    { code: "A10", capacity: 24 },
-    { code: "A11", capacity: 24 },
-    { code: "B14", capacity: 24 },
-    { code: "C20", capacity: 30 },
-    { code: "C21", capacity: 30 },
-    { code: "LAB1", capacity: 24 },
-    { code: "LAB2", capacity: 24 },
-    { code: "D30", capacity: 32 },
+    { seedKey: "A10", code: "CA-A10", name: "A10", capacity: 24 },
+    { seedKey: "A11", code: "CA-A11", name: "A11", capacity: 24 },
+    { seedKey: "B14", code: "CA-B14", name: "B14", capacity: 24 },
+    { seedKey: "C20", code: "CA-C20", name: "C20", capacity: 30 },
+    { seedKey: "C21", code: "CA-C21", name: "C21", capacity: 30 },
+    { seedKey: "LAB1", code: "CA-LAB1", name: "LAB1", capacity: 24 },
+    { seedKey: "LAB2", code: "CA-LAB2", name: "LAB2", capacity: 24 },
+    { seedKey: "D30", code: "CA-D30", name: "D30", capacity: 32 },
   ] as const;
 
   const expandedRooms = await Promise.all(
@@ -811,14 +903,14 @@ async function main() {
         },
         update: {
           locationId: location.id,
-          name: definition.code,
+          name: definition.name,
           capacity: definition.capacity,
           active: true,
         },
         create: {
           tenantId: tenant.id,
           locationId: location.id,
-          name: definition.code,
+          name: definition.name,
           code: definition.code,
           capacity: definition.capacity,
         },
@@ -827,7 +919,10 @@ async function main() {
   );
 
   const expandedRoomByCode = Object.fromEntries(
-    expandedRooms.map((room) => [room.code!, room]),
+    expandedRoomDefinitions.map((definition, index) => [
+      definition.seedKey,
+      expandedRooms[index],
+    ]),
   );
 
   const extraCourseDefinitions = [
@@ -926,7 +1021,13 @@ async function main() {
 
   const extraInstructors = await Promise.all(
     extraInstructorDefinitions.map(
-      ([externalId, firstName, lastName, employmentPercentage, maxTeachingMinutesPerWeek]) =>
+      ([
+        externalId,
+        firstName,
+        lastName,
+        employmentPercentage,
+        maxTeachingMinutesPerWeek,
+      ]) =>
         prisma.instructor.upsert({
           where: {
             tenantId_externalId_sourceSystem: {
@@ -975,7 +1076,10 @@ async function main() {
   const expandedInstructorByExternalId: Record<string, { id: string }> = {
     ...instructorByExternalId,
     ...Object.fromEntries(
-      extraInstructors.map((instructor) => [instructor.externalId!, instructor]),
+      extraInstructors.map((instructor) => [
+        instructor.externalId!,
+        instructor,
+      ]),
     ),
   };
 
@@ -1006,7 +1110,12 @@ async function main() {
     ["T12", "ENG", "SECONDARY", 120],
   ] as const;
 
-  for (const [instructorExternalId, courseCode, qualificationLevel, priority] of expandedInstructorCourses) {
+  for (const [
+    instructorExternalId,
+    courseCode,
+    qualificationLevel,
+    priority,
+  ] of expandedInstructorCourses) {
     await prisma.instructorCourse.upsert({
       where: {
         tenantId_instructorId_courseId: {
@@ -1100,15 +1209,13 @@ async function main() {
     ["T12", "ENG", 2, "NEUTRAL", 100],
   ] as const;
 
-  for (
-    const [
-      instructorExternalId,
-      courseCode,
-      competenceLevel,
-      preference,
-      preferenceWeight,
-    ] of expandedCourseCompetence
-  ) {
+  for (const [
+    instructorExternalId,
+    courseCode,
+    competenceLevel,
+    preference,
+    preferenceWeight,
+  ] of expandedCourseCompetence) {
     await prisma.instructorCourse.update({
       where: {
         tenantId_instructorId_courseId: {
@@ -1319,7 +1426,10 @@ async function main() {
     ["ST3B", "ST3B"],
   ] as const;
 
-  const expandedCohortByCode: Record<string, { id: string; code: string | null }> = {
+  const expandedCohortByCode: Record<
+    string,
+    { id: string; code: string | null }
+  > = {
     ST2A: cohort,
   };
 
@@ -1489,17 +1599,32 @@ async function main() {
   });
 
   const subjectDemand = {
-    MAT: { total: 4320, preferred: 240, min: 180, max: 360, priority: "CRITICAL" },
+    MAT: {
+      total: 4320,
+      preferred: 240,
+      min: 180,
+      max: 360,
+      priority: "CRITICAL",
+    },
     NOR: { total: 3240, preferred: 180, min: 135, max: 270, priority: "HIGH" },
     ENG: { total: 2700, preferred: 150, min: 90, max: 225, priority: "HIGH" },
     FYS: { total: 2160, preferred: 120, min: 90, max: 180, priority: "HIGH" },
-    IT:  { total: 2160, preferred: 120, min: 90, max: 180, priority: "NORMAL" },
+    IT: { total: 2160, preferred: 120, min: 90, max: 180, priority: "NORMAL" },
     SAM: { total: 1620, preferred: 90, min: 45, max: 135, priority: "NORMAL" },
     HIS: { total: 1620, preferred: 90, min: 45, max: 135, priority: "NORMAL" },
     GEO: { total: 1620, preferred: 90, min: 45, max: 135, priority: "NORMAL" },
   } as const;
 
-  const subjectOrder = ["MAT", "NOR", "ENG", "FYS", "IT", "SAM", "HIS", "GEO"] as const;
+  const subjectOrder = [
+    "MAT",
+    "NOR",
+    "ENG",
+    "FYS",
+    "IT",
+    "SAM",
+    "HIS",
+    "GEO",
+  ] as const;
 
   // Preserve the original G1-G4 codes for ST2A and add deterministic codes for
   // all remaining cohort/subject combinations.
@@ -1518,8 +1643,7 @@ async function main() {
 
     for (const subjectCode of subjectOrder) {
       const groupCode =
-        cohortCode === "ST2A" &&
-        subjectCode in originalGroupCodeBySubject
+        cohortCode === "ST2A" && subjectCode in originalGroupCodeBySubject
           ? originalGroupCodeBySubject[
               subjectCode as keyof typeof originalGroupCodeBySubject
             ]
@@ -1753,21 +1877,22 @@ async function main() {
     },
   });
 
-  const studentRequirementRows = Object.entries(expandedStudentsByCohort)
-    .flatMap(([, cohortStudents]) =>
-      cohortStudents.flatMap((student) =>
-        subjectOrder.map((subjectCode) => ({
-          tenantId: tenant.id,
-          studentId: student.id,
-          courseId: allCourseByCode[subjectCode].id,
-          academicPeriodId: academicPeriod.id,
-          requiredAmount: subjectDemand[subjectCode].total,
-          unit: "MINUTES" as const,
-          priority: subjectDemand[subjectCode].priority,
-          active: true,
-        })),
-      ),
-    );
+  const studentRequirementRows = Object.entries(
+    expandedStudentsByCohort,
+  ).flatMap(([, cohortStudents]) =>
+    cohortStudents.flatMap((student) =>
+      subjectOrder.map((subjectCode) => ({
+        tenantId: tenant.id,
+        studentId: student.id,
+        courseId: allCourseByCode[subjectCode].id,
+        academicPeriodId: academicPeriod.id,
+        requiredAmount: subjectDemand[subjectCode].total,
+        unit: "MINUTES" as const,
+        priority: subjectDemand[subjectCode].priority,
+        active: true,
+      })),
+    ),
+  );
 
   await prisma.studentCourseRequirement.createMany({
     data: studentRequirementRows,
@@ -1788,7 +1913,12 @@ async function main() {
     ["C20", "GEO", "PREFERRED", 0],
   ] as const;
 
-  for (const [roomCode, courseCode, suitability, penalty] of expandedRoomCoursePreferences) {
+  for (const [
+    roomCode,
+    courseCode,
+    suitability,
+    penalty,
+  ] of expandedRoomCoursePreferences) {
     await prisma.roomCoursePreference.upsert({
       where: {
         tenantId_roomId_courseId: {
@@ -1966,7 +2096,6 @@ async function main() {
     ],
   });
 
-
   const loadProfile = await prisma.loadProfile.upsert({
     where: {
       tenantId_code: {
@@ -2025,7 +2154,12 @@ async function main() {
   });
 
   const reviewSteps = [
-    { stage: 1, position: 1, name: "Academic review", reviewerRole: "ACADEMIC_OWNER" },
+    {
+      stage: 1,
+      position: 1,
+      name: "Academic review",
+      reviewerRole: "ACADEMIC_OWNER",
+    },
     { stage: 2, position: 1, name: "Final approval", reviewerRole: "RECTOR" },
   ] as const;
 

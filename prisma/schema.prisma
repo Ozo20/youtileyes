@@ -1978,12 +1978,18 @@ model PlanDistribution {
   @@index([tenantId, status, generatedAt])
 }
 
+enum RoomFeatureType {
+  EQUIPMENT
+  FEATURE
+}
+
 // Quantities also represent boolean features (one = present).
 model RoomFeature {
   id           String             @id @default(uuid())
   tenantId     String
   code         String
   name         String
+  type         RoomFeatureType    @default(FEATURE)
   tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   values       RoomFeatureValue[]
   requirements RoomRequirement[]

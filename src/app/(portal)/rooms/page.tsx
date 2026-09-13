@@ -12,17 +12,14 @@ import { MasterDataToolbar } from "@/components/masterdata/master-data-toolbar";
 import { StaffingRequirements } from "@/components/masterdata/staffing-requirements";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { saveRoom, toggleRoomActive } from "@/lib/masterdata/actions";
 import {
-  saveRoom,
-  toggleRoomActive,
-} from "@/lib/masterdata/actions";
+  createAndAssignRoomFeature,
+  saveRoomInventory,
+} from "@/lib/masterdata/preference-actions";
 import { prisma } from "@/lib/prisma";
 
 type PageProps = {
@@ -33,9 +30,7 @@ type PageProps = {
   }>;
 };
 
-export default async function RoomsPage({
-  searchParams,
-}: PageProps) {
+export default async function RoomsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const tenant = await prisma.tenant.findUnique({
     where: { code: "DEMO" },
@@ -97,13 +92,10 @@ export default async function RoomsPage({
         },
       },
     },
-    orderBy: [
-      { active: "desc" },
-      { name: "asc" },
-    ],
+    orderBy: [{ active: "desc" }, { name: "asc" }],
   });
 
-  const [locations, qualifications] = await Promise.all([
+  const [locations, qualifications, roomFeatures] = await Promise.all([
     prisma.location.findMany({
       where: {
         tenantId: tenant.id,
@@ -122,10 +114,16 @@ export default async function RoomsPage({
         code: "asc",
       },
     }),
+    prisma.roomFeature.findMany({
+      where: {
+        tenantId: tenant.id,
+      },
+      orderBy: [{ name: "asc" }, { code: "asc" }],
+    }),
   ]);
 
   const selected = params.id
-    ? rooms.find((item) => item.id === params.id) ??
+    ? (rooms.find((item) => item.id === params.id) ??
       (await prisma.room.findFirst({
         where: {
           id: params.id,
@@ -148,21 +146,51 @@ export default async function RoomsPage({
             },
           },
         },
-      }))
+      })))
     : null;
 
   const creating = params.new === "1";
+
+  const selectedRoomFeatures = selected
+    ? await prisma.roomFeatureValue.findMany({
+        where: {
+          tenantId: tenant.id,
+          roomId: selected.id,
+        },
+        orderBy: {
+          featureId: "asc",
+        },
+      })
+    : [];
+
+  const selectedRoomFeatureById = new Map(
+    selectedRoomFeatures.map((item) => [item.featureId, item]),
+  );
+
+  const assignedRoomFeatures = roomFeatures
+    .map((feature) => ({
+      feature,
+      value: selectedRoomFeatureById.get(feature.id),
+    }))
+    .filter(
+      (
+        item,
+      ): item is {
+        feature: (typeof roomFeatures)[number];
+        value: NonNullable<ReturnType<typeof selectedRoomFeatureById.get>>;
+      } => Boolean(item.value && item.value.quantity > 0),
+    );
+
+  const availableRoomFeatures = roomFeatures.filter(
+    (feature) => !selectedRoomFeatureById.has(feature.id),
+  );
 
   return (
     <div className="page-container">
       <PageHeader
         title="Rooms"
         description="Capacity, location and room-specific supervision requirements."
-        actions={
-          <Badge tone="info">
-            {rooms.length} rooms
-          </Badge>
-        }
+        actions={<Badge tone="info">{rooms.length} rooms</Badge>}
       />
 
       <MasterDataToolbar
@@ -185,10 +213,7 @@ export default async function RoomsPage({
                 id: room.id,
                 href: `/rooms?id=${room.id}`,
                 title: room.code ?? room.name,
-                subtitle:
-                  room.code
-                    ? `${room.name} · ${room.location.name}`
-                    : room.location.name,
+                subtitle: room.location.name,
                 status: room.active ? "ACTIVE" : "INACTIVE",
                 tone: room.active ? "success" : "warning",
                 meta:
@@ -203,45 +228,24 @@ export default async function RoomsPage({
           <Card className="master-detail-card">
             <CardHeader>
               <div>
-                <span className="eyebrow">
-                  {creating ? "Create" : "Room"}
-                </span>
+                <span className="eyebrow">{creating ? "Create" : "Room"}</span>
                 <h2>
-                  {creating
-                    ? "New room"
-                    : `${selected!.code ?? "—"} · ${selected!.name}`}
+                  {creating ? "New room" : (selected!.code ?? selected!.name)}
                 </h2>
               </div>
 
-              <Link
-                href="/rooms"
-                className="master-close"
-              >
+              <Link href="/rooms" className="master-close">
                 Close
               </Link>
             </CardHeader>
 
             <CardContent>
-              <form
-                action={saveRoom}
-                className="master-form"
-              >
+              <form action={saveRoom} className="master-form">
                 {selected ? (
-                  <input
-                    type="hidden"
-                    name="id"
-                    value={selected.id}
-                  />
+                  <input type="hidden" name="id" value={selected.id} />
                 ) : null}
 
                 <div className="master-form-grid">
-                  <Field label="Code">
-                    <TextInput
-                      name="code"
-                      defaultValue={selected?.code ?? ""}
-                    />
-                  </Field>
-
                   <Field label="Name">
                     <TextInput
                       name="name"
@@ -265,16 +269,11 @@ export default async function RoomsPage({
                       name="locationId"
                       required
                       defaultValue={
-                        selected?.locationId ??
-                        locations[0]?.id ??
-                        ""
+                        selected?.locationId ?? locations[0]?.id ?? ""
                       }
                     >
                       {locations.map((location) => (
-                        <option
-                          key={location.id}
-                          value={location.id}
-                        >
+                        <option key={location.id} value={location.id}>
                           {location.name}
                         </option>
                       ))}
@@ -297,6 +296,199 @@ export default async function RoomsPage({
 
               {selected ? (
                 <>
+                  <section className="master-subsection">
+                    <div>
+                      <span className="eyebrow">Equipment &amp; features</span>
+                      <h3>Available in this room</h3>
+                      <p className="master-muted">
+                        Equipment and room features used when evaluating
+                        scheduling requirements.
+                      </p>
+                    </div>
+
+                    <div className="qualification-assignment-list room-feature-list">
+                      {assignedRoomFeatures.length === 0 ? (
+                        <p className="master-muted">
+                          No equipment or features registered for this room.
+                        </p>
+                      ) : (
+                        assignedRoomFeatures.map(({ feature, value }) => (
+                          <div
+                            key={feature.id}
+                            className="qualification-assignment-row room-feature-row"
+                          >
+                            <div>
+                              <strong>{feature.name}</strong>
+                              <span>
+                                {feature.type === "EQUIPMENT"
+                                  ? `Equipment · quantity ${value.quantity}`
+                                  : "Feature · present"}
+                              </span>
+                            </div>
+
+                            <div className="room-feature-actions">
+                              {feature.type === "EQUIPMENT" ? (
+                                <form
+                                  action={saveRoomInventory}
+                                  className="room-feature-quantity-form"
+                                >
+                                  <input
+                                    type="hidden"
+                                    name="roomId"
+                                    value={selected.id}
+                                  />
+                                  <input
+                                    type="hidden"
+                                    name="featureId"
+                                    value={feature.id}
+                                  />
+                                  <TextInput
+                                    name="quantity"
+                                    type="number"
+                                    min={1}
+                                    required
+                                    defaultValue={value.quantity}
+                                    aria-label={`${feature.name} quantity`}
+                                  />
+                                  <Button type="submit" variant="ghost">
+                                    Save
+                                  </Button>
+                                </form>
+                              ) : null}
+
+                              <form action={saveRoomInventory}>
+                                <input
+                                  type="hidden"
+                                  name="roomId"
+                                  value={selected.id}
+                                />
+                                <input
+                                  type="hidden"
+                                  name="featureId"
+                                  value={feature.id}
+                                />
+                                <input
+                                  type="hidden"
+                                  name="quantity"
+                                  value="0"
+                                />
+                                <Button type="submit" variant="ghost">
+                                  Remove
+                                </Button>
+                              </form>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <details className="room-feature-add">
+                      <summary>Add equipment or feature</summary>
+
+                      <div className="room-feature-add-content">
+                        {availableRoomFeatures.length > 0 ? (
+                          <form
+                            action={saveRoomInventory}
+                            className="master-inline-form room-feature-add-form"
+                          >
+                            <input
+                              type="hidden"
+                              name="roomId"
+                              value={selected.id}
+                            />
+
+                            <Field label="Equipment or feature">
+                              <SelectInput
+                                name="featureId"
+                                required
+                                defaultValue=""
+                              >
+                                <option value="" disabled>
+                                  Select item
+                                </option>
+                                {availableRoomFeatures.map((feature) => (
+                                  <option key={feature.id} value={feature.id}>
+                                    {feature.name} ·{" "}
+                                    {feature.type === "EQUIPMENT"
+                                      ? "Equipment"
+                                      : "Feature"}
+                                  </option>
+                                ))}
+                              </SelectInput>
+                            </Field>
+
+                            <Field label="Quantity">
+                              <TextInput
+                                name="quantity"
+                                type="number"
+                                min={1}
+                                required
+                                defaultValue={1}
+                              />
+                            </Field>
+
+                            <Button type="submit" variant="secondary">
+                              Add
+                            </Button>
+                          </form>
+                        ) : (
+                          <p className="master-muted">
+                            All catalogue items are already assigned to this
+                            room.
+                          </p>
+                        )}
+
+                        <details className="room-feature-create-new">
+                          <summary>Create new catalogue item</summary>
+
+                          <form
+                            action={createAndAssignRoomFeature}
+                            className="master-inline-form room-feature-create-form"
+                          >
+                            <input
+                              type="hidden"
+                              name="roomId"
+                              value={selected.id}
+                            />
+
+                            <Field label="Type">
+                              <SelectInput
+                                name="type"
+                                required
+                                defaultValue="EQUIPMENT"
+                              >
+                                <option value="EQUIPMENT">Equipment</option>
+                                <option value="FEATURE">Feature</option>
+                              </SelectInput>
+                            </Field>
+
+                            <Field label="Name">
+                              <TextInput
+                                name="name"
+                                required
+                                placeholder="Projector"
+                              />
+                            </Field>
+
+                            <Field label="Quantity">
+                              <TextInput
+                                name="quantity"
+                                type="number"
+                                min={1}
+                                required
+                                defaultValue={1}
+                              />
+                            </Field>
+
+                            <Button type="submit" variant="secondary">
+                              Create and add
+                            </Button>
+                          </form>
+                        </details>
+                      </div>
+                    </details>
+                  </section>
+
                   <StaffingRequirements
                     source="ROOM"
                     targetId={selected.id}
@@ -307,9 +499,7 @@ export default async function RoomsPage({
 
                   <section className="master-subsection master-danger-zone">
                     <div>
-                      <span className="eyebrow">
-                        Lifecycle
-                      </span>
+                      <span className="eyebrow">Lifecycle</span>
                       <h3>
                         {selected.active
                           ? "Deactivate room"
@@ -321,11 +511,7 @@ export default async function RoomsPage({
                     </div>
 
                     <form action={toggleRoomActive}>
-                      <input
-                        type="hidden"
-                        name="id"
-                        value={selected.id}
-                      />
+                      <input type="hidden" name="id" value={selected.id} />
                       <input
                         type="hidden"
                         name="active"

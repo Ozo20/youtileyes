@@ -11,6 +11,7 @@ import {
   StaffingRequirementSource,
   StaffingRoleType,
 } from "../../generated/prisma/client";
+import type { Prisma } from "../../generated/prisma/client";
 
 import { writeAuditEvent } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
@@ -52,11 +53,7 @@ function optionalInt(formData: FormData, key: string) {
   return parsed;
 }
 
-function positiveInt(
-  formData: FormData,
-  key: string,
-  fallback = 1,
-) {
+function positiveInt(formData: FormData, key: string, fallback = 1) {
   const value = optionalInt(formData, key) ?? fallback;
 
   if (value < 1) {
@@ -112,10 +109,7 @@ export async function saveInstructor(formData: FormData) {
     formData,
     "maxTeachingMinutesPerWeek",
   );
-  const primaryLocationId = optionalText(
-    formData,
-    "primaryLocationId",
-  );
+  const primaryLocationId = optionalText(formData, "primaryLocationId");
 
   const saved = await prisma.$transaction(async (tx) => {
     if (id) {
@@ -217,9 +211,7 @@ export async function toggleInstructorStatus(formData: FormData) {
     await writeAuditEvent(tx, {
       tenantId: tenant.id,
       eventType:
-        nextStatus === PersonStatus.ACTIVE
-          ? "REACTIVATED"
-          : "DEACTIVATED",
+        nextStatus === PersonStatus.ACTIVE ? "REACTIVATED" : "DEACTIVATED",
       entityType: "Instructor",
       entityId: after.id,
       actor: DEMO_ACTOR,
@@ -314,9 +306,7 @@ export async function saveQualification(formData: FormData) {
   refreshAndRedirect(`/qualifications?id=${saved.id}`);
 }
 
-export async function toggleQualificationActive(
-  formData: FormData,
-) {
+export async function toggleQualificationActive(formData: FormData) {
   const tenant = await demoTenant();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
@@ -358,15 +348,10 @@ export async function toggleQualificationActive(
   refreshAndRedirect(`/qualifications?id=${id}`);
 }
 
-export async function assignInstructorQualification(
-  formData: FormData,
-) {
+export async function assignInstructorQualification(formData: FormData) {
   const tenant = await demoTenant();
   const instructorId = requiredText(formData, "instructorId");
-  const qualificationId = requiredText(
-    formData,
-    "qualificationId",
-  );
+  const qualificationId = requiredText(formData, "qualificationId");
   const level = positiveInt(formData, "level");
   const correlationId = randomUUID();
 
@@ -453,15 +438,10 @@ export async function assignInstructorQualification(
   refreshAndRedirect(`/instructors?id=${instructorId}`);
 }
 
-export async function toggleInstructorQualification(
-  formData: FormData,
-) {
+export async function toggleInstructorQualification(formData: FormData) {
   const tenant = await demoTenant();
   const id = requiredText(formData, "id");
-  const instructorId = requiredText(
-    formData,
-    "instructorId",
-  );
+  const instructorId = requiredText(formData, "instructorId");
   const active = requiredText(formData, "active") === "true";
   const correlationId = randomUUID();
 
@@ -516,10 +496,7 @@ export async function saveCourse(formData: FormData) {
 
   const code = optionalText(formData, "code")?.toUpperCase() ?? null;
   const name = requiredText(formData, "name");
-  const deliveryModeValue = requiredText(
-    formData,
-    "deliveryMode",
-  );
+  const deliveryModeValue = requiredText(formData, "deliveryMode");
 
   if (
     !Object.values(CourseDeliveryMode).includes(
@@ -535,26 +512,11 @@ export async function saveCourse(formData: FormData) {
     deliveryMode: deliveryModeValue as CourseDeliveryMode,
     standardGroupSize: optionalInt(formData, "standardGroupSize"),
     maxGroupSize: optionalInt(formData, "maxGroupSize"),
-    minSessionMinutes: optionalInt(
-      formData,
-      "minSessionMinutes",
-    ),
-    preferredSessionMinutes: optionalInt(
-      formData,
-      "preferredSessionMinutes",
-    ),
-    maxSessionMinutes: optionalInt(
-      formData,
-      "maxSessionMinutes",
-    ),
-    allowDoubleSession: checked(
-      formData,
-      "allowDoubleSession",
-    ),
-    maxSessionsPerDay: optionalInt(
-      formData,
-      "maxSessionsPerDay",
-    ),
+    minSessionMinutes: optionalInt(formData, "minSessionMinutes"),
+    preferredSessionMinutes: optionalInt(formData, "preferredSessionMinutes"),
+    maxSessionMinutes: optionalInt(formData, "maxSessionMinutes"),
+    allowDoubleSession: checked(formData, "allowDoubleSession"),
+    maxSessionsPerDay: optionalInt(formData, "maxSessionsPerDay"),
     active: checked(formData, "active"),
   };
 
@@ -659,13 +621,61 @@ export async function toggleCourseActive(formData: FormData) {
   refreshAndRedirect(`/courses?id=${id}`);
 }
 
+function normalizeCodePart(value: string) {
+  return value
+    .toUpperCase()
+    .replaceAll("Æ", "AE")
+    .replaceAll("Ø", "O")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+async function generateRoomCode(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  locationCode: string | null,
+  locationName: string,
+  roomName: string,
+) {
+  const locationPart =
+    normalizeCodePart(locationCode ?? "").slice(0, 4) ||
+    normalizeCodePart(locationName)
+      .split(/(?=[A-Z])/)
+      .join("")
+      .slice(0, 4) ||
+    "LOC";
+
+  const roomPart = normalizeCodePart(roomName) || "ROOM";
+
+  const base = `${locationPart}-${roomPart}`;
+  let candidate = base;
+  let suffix = 2;
+
+  while (
+    await tx.room.findUnique({
+      where: {
+        tenantId_code: {
+          tenantId,
+          code: candidate,
+        },
+      },
+      select: { id: true },
+    })
+  ) {
+    candidate = `${base}${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
 export async function saveRoom(formData: FormData) {
   const tenant = await demoTenant();
   const id = optionalText(formData, "id");
   const correlationId = randomUUID();
 
   const name = requiredText(formData, "name");
-  const code = optionalText(formData, "code")?.toUpperCase() ?? null;
   const capacity = positiveInt(formData, "capacity");
   const locationId = requiredText(formData, "locationId");
   const active = checked(formData, "active");
@@ -675,7 +685,11 @@ export async function saveRoom(formData: FormData) {
       id: locationId,
       tenantId: tenant.id,
     },
-    select: { id: true },
+    select: {
+      id: true,
+      name: true,
+      code: true,
+    },
   });
 
   if (!location) {
@@ -699,7 +713,6 @@ export async function saveRoom(formData: FormData) {
         where: { id },
         data: {
           name,
-          code,
           capacity,
           locationId,
           active,
@@ -721,6 +734,14 @@ export async function saveRoom(formData: FormData) {
 
       return after;
     }
+
+    const code = await generateRoomCode(
+      tx,
+      tenant.id,
+      location.code,
+      location.name,
+      name,
+    );
 
     const after = await tx.room.create({
       data: {
@@ -793,9 +814,7 @@ export async function toggleRoomActive(formData: FormData) {
   refreshAndRedirect(`/rooms?id=${id}`);
 }
 
-export async function createStaffingRequirement(
-  formData: FormData,
-) {
+export async function createStaffingRequirement(formData: FormData) {
   const tenant = await demoTenant();
   const sourceValue = requiredText(formData, "source");
 
@@ -811,9 +830,7 @@ export async function createStaffingRequirement(
   const roleValue = requiredText(formData, "role");
 
   if (
-    !Object.values(StaffingRoleType).includes(
-      roleValue as StaffingRoleType,
-    )
+    !Object.values(StaffingRoleType).includes(roleValue as StaffingRoleType)
   ) {
     throw new Error("Invalid staffing role.");
   }
@@ -821,17 +838,12 @@ export async function createStaffingRequirement(
   const role = roleValue as StaffingRoleType;
   const courseId = optionalText(formData, "courseId");
   const roomId = optionalText(formData, "roomId");
-  const teachingGroupId = optionalText(
-    formData,
-    "teachingGroupId",
-  );
+  const teachingGroupId = optionalText(formData, "teachingGroupId");
 
   if (
-    (source === StaffingRequirementSource.COURSE &&
-      !courseId) ||
+    (source === StaffingRequirementSource.COURSE && !courseId) ||
     (source === StaffingRequirementSource.ROOM && !roomId) ||
-    (source === StaffingRequirementSource.TEACHING_GROUP &&
-      !teachingGroupId)
+    (source === StaffingRequirementSource.TEACHING_GROUP && !teachingGroupId)
   ) {
     throw new Error("Staffing source target is missing.");
   }
@@ -844,17 +856,23 @@ export async function createStaffingRequirement(
   const minimumCourseLevel = optionalInt(formData, "minimumCourseLevel");
   const preferredCourseLevel = optionalInt(formData, "preferredCourseLevel");
   for (const level of [minimumCourseLevel, preferredCourseLevel]) {
-    if (level !== null && (!Number.isInteger(level) || level < 1 || level > 100)) throw new Error("Course level must be 1–100.");
+    if (
+      level !== null &&
+      (!Number.isInteger(level) || level < 1 || level > 100)
+    )
+      throw new Error("Course level must be 1–100.");
   }
-  if (minimumCourseLevel !== null && preferredCourseLevel !== null && preferredCourseLevel < minimumCourseLevel) throw new Error("Preferred level cannot be below minimum.");
+  if (
+    minimumCourseLevel !== null &&
+    preferredCourseLevel !== null &&
+    preferredCourseLevel < minimumCourseLevel
+  )
+    throw new Error("Preferred level cannot be below minimum.");
   const minimumQualificationLevel = optionalInt(
     formData,
     "minimumQualificationLevel",
   );
-  const minimumStudentCount = optionalInt(
-    formData,
-    "minimumStudentCount",
-  );
+  const minimumStudentCount = optionalInt(formData, "minimumStudentCount");
   const hard = checked(formData, "hard");
   const correlationId = randomUUID();
 
@@ -917,9 +935,7 @@ export async function createStaffingRequirement(
   refreshAndRedirect("/planning");
 }
 
-export async function toggleStaffingRequirement(
-  formData: FormData,
-) {
+export async function toggleStaffingRequirement(formData: FormData) {
   const tenant = await demoTenant();
   const id = requiredText(formData, "id");
   const active = requiredText(formData, "active") === "true";
