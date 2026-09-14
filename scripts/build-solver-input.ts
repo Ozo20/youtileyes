@@ -102,18 +102,10 @@ function exceptionBlockForDate(
 async function main() {
   const args = parseArgs();
 
-  const tenant = await prisma.tenant.findUnique({ where: { code: "DEMO" } });
-  if (!tenant) {
-    throw new Error(
-      'Demo tenant "DEMO" was not found. Run npm run db:seed first.',
-    );
-  }
-
   const scenario = args.scenarioId
-    ? await prisma.planScenario.findFirst({
+    ? await prisma.planScenario.findUnique({
         where: {
           id: args.scenarioId,
-          tenantId: tenant.id,
         },
         include: {
           plan: true,
@@ -121,7 +113,9 @@ async function main() {
       })
     : await prisma.planScenario.findFirst({
         where: {
-          tenantId: tenant.id,
+          tenant: {
+            code: process.env.APP_TENANT_CODE ?? "DEMO",
+          },
           name: "Initial solver scenario",
         },
         orderBy: {
@@ -131,8 +125,25 @@ async function main() {
           plan: true,
         },
       });
+
   if (!scenario) {
-    throw new Error("Demo PlanScenario was not found.");
+    throw new Error(
+      args.scenarioId
+        ? `PlanScenario "${args.scenarioId}" was not found.`
+        : "Initial solver scenario was not found for the configured tenant.",
+    );
+  }
+
+  const tenant = await prisma.tenant.findUnique({
+    where: {
+      id: scenario.tenantId,
+    },
+  });
+
+  if (!tenant) {
+    throw new Error(
+      `Tenant "${scenario.tenantId}" for PlanScenario "${scenario.id}" was not found.`,
+    );
   }
 
   const { plan } = scenario;
