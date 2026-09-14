@@ -375,7 +375,7 @@ def solve_multi_day_week(
     placement_rules: list[dict] | None = None,
     student_break_rules: list[dict] | None = None,
     instructor_break_rules: list[dict] | None = None,
-    max_time_seconds: float = 30,
+    max_time_seconds: float | None = None,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> MultiDayScheduleResult:
     """Solve one week with decoupled placement and resource assignment.
@@ -1429,6 +1429,27 @@ def solve_multi_day_week(
         + len(order_vars)
     )
 
+    if max_time_seconds is None:
+        if selector_count < 150_000:
+            complexity_budget_seconds = 30.0
+        elif selector_count < 400_000:
+            complexity_budget_seconds = 60.0
+        elif selector_count < 800_000:
+            complexity_budget_seconds = 120.0
+        elif selector_count < 1_500_000:
+            complexity_budget_seconds = 300.0
+        elif selector_count < 3_000_000:
+            complexity_budget_seconds = 450.0
+        else:
+            complexity_budget_seconds = 600.0
+
+        solver_time_budget_seconds = min(
+            600.0,
+            max(complexity_budget_seconds, model_seconds),
+        )
+    else:
+        solver_time_budget_seconds = max(0.01, float(max_time_seconds))
+
     emit(
         phase="SOLVING",
         phaseLabel="Finding feasible timetable",
@@ -1451,7 +1472,7 @@ def solve_multi_day_week(
     # Phase 1: find any feasible timetable. This is intentionally objective-free
     # and stops at the first solution so users get a usable plan quickly.
     feasibility_solver = cp_model.CpSolver()
-    feasibility_solver.parameters.max_time_in_seconds = max_time_seconds
+    feasibility_solver.parameters.max_time_in_seconds = solver_time_budget_seconds
     feasibility_solver.parameters.num_workers = 8
     feasibility_solver.parameters.stop_after_first_solution = True
 
@@ -1482,6 +1503,7 @@ def solve_multi_day_week(
         "candidateSeconds": round(preparation_seconds, 6),
         "modelSeconds": round(model_seconds, 6),
         "feasibilitySeconds": round(feasibility_seconds, 6),
+        "timeLimitSeconds": round(solver_time_budget_seconds, 3),
     }
 
     if feasibility_status not in {"OPTIMAL", "FEASIBLE"}:
@@ -1790,7 +1812,10 @@ def solve_multi_day_week(
         feasibility_solver
     )
 
-    remaining_seconds = max(0.0, max_time_seconds - feasibility_seconds)
+    remaining_seconds = max(
+        0.0,
+        solver_time_budget_seconds - feasibility_seconds,
+    )
     optimization_seconds = 0.0
     final_status = "FEASIBLE"
     final_sessions = feasible_sessions
