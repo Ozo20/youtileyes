@@ -484,6 +484,65 @@ async function main() {
     },
   });
 
+  const reviewWorkflow = await prisma.planReviewWorkflow.upsert({
+    where: {
+      tenantId_planId_name: {
+        tenantId: tenant.id,
+        planId: plan.id,
+        name: "Standard plan approval",
+      },
+    },
+    update: {},
+    create: {
+      tenantId: tenant.id,
+      planId: plan.id,
+      name: "Standard plan approval",
+      status: "DRAFT",
+    },
+  });
+
+  const reviewSteps = [
+    {
+      stage: 1,
+      position: 1,
+      name: "Academic review",
+      reviewerRole: "ACADEMIC_OWNER",
+    },
+    {
+      stage: 2,
+      position: 1,
+      name: "Final approval",
+      reviewerRole: "RECTOR",
+    },
+  ] as const;
+
+  for (const step of reviewSteps) {
+    await prisma.planReviewStep.upsert({
+      where: {
+        tenantId_workflowId_stage_position: {
+          tenantId: tenant.id,
+          workflowId: reviewWorkflow.id,
+          stage: step.stage,
+          position: step.position,
+        },
+      },
+      update: {
+        name: step.name,
+        reviewerRole: step.reviewerRole,
+        required: true,
+      },
+      create: {
+        tenantId: tenant.id,
+        workflowId: reviewWorkflow.id,
+        stage: step.stage,
+        position: step.position,
+        name: step.name,
+        reviewerRole: step.reviewerRole,
+        required: true,
+      },
+    });
+  }
+
   for (
     let date = new Date("2026-08-17T00:00:00.000Z");
     date <= new Date("2026-12-18T00:00:00.000Z");

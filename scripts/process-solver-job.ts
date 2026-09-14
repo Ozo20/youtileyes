@@ -594,7 +594,7 @@ async function processBasePlanJob(jobId: string) {
       groups.map((group) => [group.id, group]),
     );
 
-    const completedAt = new Date();
+    const solverCompletedAt = new Date();
 
     await prisma.$transaction(
       async (tx) => {
@@ -699,7 +699,7 @@ async function processBasePlanJob(jobId: string) {
             ) as Prisma.InputJsonValue,
             inputFingerprint,
           } satisfies Prisma.InputJsonValue,
-          generatedAt: completedAt,
+          generatedAt: solverCompletedAt,
           failureMessage: null,
         },
       });
@@ -727,9 +727,9 @@ async function processBasePlanJob(jobId: string) {
         data: {
           status: finalRunStatus,
           objectiveValue: output.objective_value,
-          completedAt,
+          completedAt: solverCompletedAt,
           wallTimeSeconds:
-            (completedAt.getTime() - startedAt.getTime()) / 1000,
+            (solverCompletedAt.getTime() - startedAt.getTime()) / 1000,
           diagnostics: {
             jobType: "BASE_PLAN",
             planId: plan.id,
@@ -781,13 +781,15 @@ async function processBasePlanJob(jobId: string) {
         `Proposal ready with ${output.sessions.length} sessions.`,
     });
 
+    const jobCompletedAt = new Date();
+
     await prisma.solverJob.update({
       where: {
         id: job.id,
       },
       data: {
         status: SolverJobStatus.SUCCEEDED,
-        completedAt,
+        completedAt: jobCompletedAt,
         failureMessage: null,
       },
     });
