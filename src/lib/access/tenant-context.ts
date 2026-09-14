@@ -8,10 +8,9 @@ const ROLE_RANK: Record<TenantRole, number> = {
   ADMIN: 40,
 };
 
-const DEMO_USER_EMAIL =
-  process.env.YOUTILEYES_DEMO_USER_EMAIL ?? "ola.solem@example.test";
+const DEMO_USER_EMAIL = process.env.APP_USER_EMAIL ?? "ola.solem@example.test";
 
-const DEMO_TENANT_CODE = process.env.YOUTILEYES_DEMO_TENANT_CODE ?? "DEMO";
+const DEMO_TENANT_CODE = process.env.APP_TENANT_CODE ?? "DEMO";
 
 export type TenantContext = {
   tenant: {
