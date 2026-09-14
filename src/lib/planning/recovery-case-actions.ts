@@ -1,7 +1,5 @@
 "use server";
 
-import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { revalidatePath } from "next/cache";
@@ -65,25 +63,6 @@ async function resourceLabel(
   if (!room) throw new Error("Room not found.");
   return room.code ? `${room.code} · ${room.name}` : room.name;
 }
-
-function dispatchCaseWorker(jobId: string) {
-  const logPath = `/tmp/youtileyes_recovery_case_job_${jobId}.log`;
-  const logFd = openSync(logPath, "a");
-
-  const child = spawn(
-    "npx",
-    ["tsx", "scripts/process-recovery-case-job.ts", "--job", jobId],
-    {
-      cwd: process.cwd(),
-      env: process.env,
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-    },
-  );
-  child.unref();
-  return logPath;
-}
-
 
 async function invalidateCurrentRecoveryProposal(
   tx: Prisma.TransactionClient,
@@ -565,7 +544,7 @@ export async function queueRecoveryCaseJob(formData: FormData) {
           correlationId,
           requestedByName: DEMO_ACTOR.name,
           disruptionCount: recoveryCase.disruptions.length,
-          executionMode: "LOCAL_DETACHED_WORKER",
+          executionMode: "QUEUE_WORKER",
         } satisfies Prisma.InputJsonValue,
       },
     });
@@ -597,18 +576,6 @@ export async function queueRecoveryCaseJob(formData: FormData) {
     });
 
     return created;
-  });
-
-  const logPath = dispatchCaseWorker(job.id);
-  const config = (job.config ?? {}) as Record<string, unknown>;
-  await prisma.solverJob.update({
-    where: { id: job.id },
-    data: {
-      config: {
-        ...config,
-        localLogPath: logPath,
-      } as Prisma.InputJsonValue,
-    },
   });
 
   revalidatePath("/planning");

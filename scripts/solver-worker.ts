@@ -44,29 +44,74 @@ async function sleep(milliseconds: number): Promise<void> {
   });
 }
 
-async function findNextQueuedJob(): Promise<{ id: string } | null> {
+type QueuedSolverJob = {
+  id: string;
+  recoveryCaseId: string | null;
+  config: unknown;
+};
+
+async function findNextQueuedJob(): Promise<QueuedSolverJob | null> {
   return prisma.solverJob.findFirst({
     where: { status: "QUEUED" },
     orderBy: [{ priority: "asc" }, { queuedAt: "asc" }],
-    select: { id: true },
+    select: {
+      id: true,
+      recoveryCaseId: true,
+      config: true,
+    },
   });
 }
 
-async function processSolverJob(jobId: string): Promise<void> {
-  console.log(`[solver-worker] Processing SolverJob ${jobId}.`);
+function solverJobType(config: unknown): string | null {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return null;
+  }
+
+  const type = (config as Record<string, unknown>).type;
+  return typeof type === "string" ? type : null;
+}
+
+async function processSolverJob(job: QueuedSolverJob): Promise<void> {
+  const type = solverJobType(job.config);
+
+  let processor: string;
+  if (job.recoveryCaseId || type === "RECOVERY_CASE") {
+    processor = "scripts/process-recovery-case-job.ts";
+  } else if (type === "BASE_PLAN" || type === "RESOURCE_RECOVERY") {
+    processor = "scripts/process-solver-job.ts";
+  } else {
+    const failureMessage = `Unsupported solver job type: ${JSON.stringify(type)}.`;
+
+    await prisma.solverJob.updateMany({
+      where: {
+        id: job.id,
+        status: "QUEUED",
+      },
+      data: {
+        status: "FAILED",
+        completedAt: new Date(),
+        failureMessage,
+      },
+    });
+
+    console.error(
+      `[solver-worker] SolverJob ${job.id} rejected: ${failureMessage}`,
+    );
+    return;
+  }
+
+  console.log(
+    `[solver-worker] Processing SolverJob ${job.id} (${type ?? "unknown"}) with ${processor}.`,
+  );
 
   const executable = process.platform === "win32" ? "npx.cmd" : "npx";
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      executable,
-      ["tsx", "scripts/process-solver-job.ts", "--job", jobId],
-      {
-        cwd: process.cwd(),
-        env: process.env,
-        stdio: "inherit",
-      },
-    );
+    const child = spawn(executable, ["tsx", processor, "--job", job.id], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: "inherit",
+    });
 
     child.once("error", reject);
     child.once("close", (code, signal) => {
@@ -77,7 +122,7 @@ async function processSolverJob(jobId: string): Promise<void> {
 
       reject(
         new Error(
-          `SolverJob ${jobId} worker process exited with code ${String(
+          `SolverJob ${job.id} worker process exited with code ${String(
             code,
           )}${signal ? ` (${signal})` : ""}.`,
         ),
@@ -100,9 +145,9 @@ async function main(): Promise<void> {
         continue;
       }
 
-      // process-solver-job.ts remains the authoritative place for the atomic
+      // The selected processor remains authoritative for the atomic
       // QUEUED -> RUNNING claim and all job state transitions.
-      await processSolverJob(job.id);
+      await processSolverJob(job);
     } catch (error) {
       console.error("[solver-worker] Worker iteration failed.", error);
 

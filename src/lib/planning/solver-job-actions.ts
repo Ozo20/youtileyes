@@ -1,7 +1,5 @@
 "use server";
 
-import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { revalidatePath } from "next/cache";
@@ -32,31 +30,6 @@ function dateOnly(value: string, key: string) {
   }
 
   return value;
-}
-
-function dispatchLocalWorker(jobId: string) {
-  const logPath = `/tmp/youtileyes_solver_job_${jobId}.log`;
-  const logFd = openSync(logPath, "a");
-
-  const child = spawn(
-    "npx",
-    [
-      "tsx",
-      "scripts/process-solver-job.ts",
-      "--job",
-      jobId,
-    ],
-    {
-      cwd: process.cwd(),
-      env: process.env,
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-    },
-  );
-
-  child.unref();
-
-  return logPath;
 }
 
 export async function queueResourceRecoveryJob(
@@ -155,7 +128,7 @@ export async function queueResourceRecoveryJob(
           endDate,
           correlationId,
           requestedByName: DEMO_ACTOR.name,
-          executionMode: "LOCAL_DETACHED_WORKER",
+          executionMode: "QUEUE_WORKER",
         } satisfies Prisma.InputJsonValue,
       },
     });
@@ -187,31 +160,6 @@ export async function queueResourceRecoveryJob(
     });
 
     return created;
-  });
-
-  const logPath = dispatchLocalWorker(job.id);
-
-  await prisma.solverJob.update({
-    where: {
-      id: job.id,
-    },
-    data: {
-      config: {
-        schemaVersion: "1.0",
-        type: "RESOURCE_RECOVERY",
-        baseScenarioId: baseScenario.id,
-        planId: baseScenario.planId,
-        resourceType,
-        resourceId,
-        resourceLabel: label,
-        startDate,
-        endDate,
-        correlationId,
-        requestedByName: DEMO_ACTOR.name,
-        executionMode: "LOCAL_DETACHED_WORKER",
-        localLogPath: logPath,
-      },
-    },
   });
 
   revalidatePath("/planning");

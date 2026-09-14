@@ -1,8 +1,6 @@
 "use server";
 
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -29,31 +27,6 @@ function requiredText(formData: FormData, key: string) {
   }
 
   return value.trim();
-}
-
-function dispatchLocalWorker(jobId: string) {
-  const logPath = `/tmp/youtileyes_solver_job_${jobId}.log`;
-  const logFd = openSync(logPath, "a");
-
-  const child = spawn(
-    "npx",
-    [
-      "tsx",
-      "scripts/process-solver-job.ts",
-      "--job",
-      jobId,
-    ],
-    {
-      cwd: process.cwd(),
-      env: process.env,
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-    },
-  );
-
-  child.unref();
-
-  return logPath;
 }
 
 async function basePlanInputFingerprint(planId: string) {
@@ -314,7 +287,7 @@ export async function generateBasePlanScenario(
             inputFingerprint,
             correlationId,
             requestedByName: DEMO_ACTOR.name,
-            executionMode: "LOCAL_DETACHED_WORKER",
+            executionMode: "QUEUE_WORKER",
             progress: {
               phase: "QUEUED",
               phaseLabel: "Queued",
@@ -373,29 +346,6 @@ export async function generateBasePlanScenario(
       };
     },
   );
-
-  const logPath = `/tmp/youtileyes_solver_job_${job.id}.log`;
-
-  const config =
-    job.config &&
-    typeof job.config === "object" &&
-    !Array.isArray(job.config)
-      ? (job.config as Prisma.JsonObject)
-      : {};
-
-  await prisma.solverJob.update({
-    where: {
-      id: job.id,
-    },
-    data: {
-      config: {
-        ...config,
-        localLogPath: logPath,
-      } satisfies Prisma.InputJsonValue,
-    },
-  });
-
-  dispatchLocalWorker(job.id);
 
   revalidatePath("/planning");
   revalidatePath("/planning/base-plan");
