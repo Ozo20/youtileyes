@@ -17,13 +17,13 @@ async function main() {
   });
 
   const user = await prisma.user.upsert({
-    where: { email: "ola.solem@example.test" },
+    where: { email: "olasolem@gmail.com" },
     update: {
       name: "Ola Solem",
       active: true,
     },
     create: {
-      email: "ola.solem@example.test",
+      email: "olasolem@gmail.com",
       name: "Ola Solem",
       active: true,
     },
