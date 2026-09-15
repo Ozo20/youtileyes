@@ -1454,8 +1454,6 @@ def solve_multi_day_week(
         solver_worker_count = 8
     elif selector_count < 1_000_000:
         solver_worker_count = 6
-    elif selector_count < 2_000_000:
-        solver_worker_count = 4
     else:
         solver_worker_count = 2
 
@@ -1468,6 +1466,8 @@ def solve_multi_day_week(
         selectorCount=selector_count,
         candidateSeconds=round(preparation_seconds, 3),
         modelSeconds=round(model_seconds, 3),
+        timeLimitSeconds=round(solver_time_budget_seconds, 3),
+        solverWorkerCount=solver_worker_count,
         instructorTravelConstraints=instructor_travel_constraints,
         studentBreakConstraints=(
             student_break_constraints + student_travel_constraints
