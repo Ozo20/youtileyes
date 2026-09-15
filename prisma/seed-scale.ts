@@ -243,7 +243,10 @@ async function main() {
     },
   });
 
-  const adminEmail = process.env.APP_USER_EMAIL ?? "olasolem@gmail.com";
+  const adminEmail =
+    process.env.SCALE_SEED_ADMIN_EMAIL ??
+    process.env.APP_USER_EMAIL ??
+    "olasolem@gmail.com";
   const adminUser = await prisma.user.upsert({
     where: { email: adminEmail },
     update: { active: true },
@@ -1501,6 +1504,7 @@ async function main() {
   const manifest = {
     profile: profileName,
     tenantCode,
+    adminEmail,
     datasetVersion: DATASET_VERSION,
     complexityProfile: COMPLEXITY_PROFILE,
     generatorSeed: profile.generatorSeed,

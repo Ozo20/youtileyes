@@ -1450,6 +1450,15 @@ def solve_multi_day_week(
     else:
         solver_time_budget_seconds = max(0.01, float(max_time_seconds))
 
+    if selector_count < 400_000:
+        solver_worker_count = 8
+    elif selector_count < 1_000_000:
+        solver_worker_count = 6
+    elif selector_count < 2_000_000:
+        solver_worker_count = 4
+    else:
+        solver_worker_count = 2
+
     emit(
         phase="SOLVING",
         phaseLabel="Finding feasible timetable",
@@ -1473,7 +1482,7 @@ def solve_multi_day_week(
     # and stops at the first solution so users get a usable plan quickly.
     feasibility_solver = cp_model.CpSolver()
     feasibility_solver.parameters.max_time_in_seconds = solver_time_budget_seconds
-    feasibility_solver.parameters.num_workers = 8
+    feasibility_solver.parameters.num_workers = solver_worker_count
     feasibility_solver.parameters.stop_after_first_solution = True
 
     feasibility_started = perf_counter()
@@ -1504,6 +1513,7 @@ def solve_multi_day_week(
         "modelSeconds": round(model_seconds, 6),
         "feasibilitySeconds": round(feasibility_seconds, 6),
         "timeLimitSeconds": round(solver_time_budget_seconds, 3),
+        "solverWorkerCount": solver_worker_count,
     }
 
     if feasibility_status not in {"OPTIMAL", "FEASIBLE"}:
@@ -1854,7 +1864,7 @@ def solve_multi_day_week(
 
         optimization_solver = cp_model.CpSolver()
         optimization_solver.parameters.max_time_in_seconds = remaining_seconds
-        optimization_solver.parameters.num_workers = 8
+        optimization_solver.parameters.num_workers = solver_worker_count
 
         optimization_started = perf_counter()
         optimization_status_code = optimization_solver.solve(model)
