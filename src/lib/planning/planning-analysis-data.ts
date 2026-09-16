@@ -1,4 +1,7 @@
 import {
+  canPackSessionsAcrossTeachingDays,
+} from "@/lib/planning/base-plan";
+import {
   summarizePlanningAnalysis,
   type PlanningAnalysisCheck,
   type PlanningAnalysisResult,
@@ -566,6 +569,7 @@ export async function getPlanningAnalysis(
       weekStartDate: Date;
       requiredMinutes: number;
       requiredSessions: number;
+      sessionDurations: number[];
       availableTeachingDays: number;
     }
   >();
@@ -728,19 +732,26 @@ export async function getPlanningAnalysis(
               allocation.weekStartDate,
             requiredMinutes: 0,
             requiredSessions: 0,
+            sessionDurations: [],
             availableTeachingDays: 0,
           };
 
         existing.requiredMinutes +=
           allocation.targetMinutes;
 
-        existing.requiredSessions +=
-          allocation.targetMinutes > 0
-            ? Math.ceil(
-                allocation.targetMinutes /
-                  sessionMinutes,
-              )
-            : 0;
+        let remainingSessionMinutes =
+          allocation.targetMinutes;
+
+        while (remainingSessionMinutes > 0) {
+          const duration = Math.min(
+            sessionMinutes,
+            remainingSessionMinutes,
+          );
+
+          existing.sessionDurations.push(duration);
+          existing.requiredSessions += 1;
+          remainingSessionMinutes -= duration;
+        }
 
         // Group-specific blocks must not make the
         // entire cohort appear unavailable.
@@ -872,6 +883,60 @@ export async function getPlanningAnalysis(
           severity === "BLOCKING"
             ? "Move sessions to another week, restore teaching days, or revise session limits."
             : null,
+      });
+    }
+
+    if (
+      loadProfile?.maxTeachingMinutesPerDay != null &&
+      loadProfile.maxSessionsPerDay != null
+    ) {
+      const packable =
+        canPackSessionsAcrossTeachingDays({
+          sessionDurations: row.sessionDurations,
+          teachingDays: row.availableTeachingDays,
+          maxSessionsPerDay:
+            loadProfile.maxSessionsPerDay,
+          maxTeachingMinutesPerDay:
+            loadProfile.maxTeachingMinutesPerDay,
+        });
+
+      const durationCounts = new Map<number, number>();
+
+      for (const duration of row.sessionDurations) {
+        durationCounts.set(
+          duration,
+          (durationCounts.get(duration) ?? 0) + 1,
+        );
+      }
+
+      const sessionMix = [...durationCounts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(
+          ([duration, count]) =>
+            `${count} × ${duration} min`,
+        )
+        .join(", ");
+
+      checks.push({
+        id: `cohort-session-packing:${cohortKey}`,
+        phase: "AGGREGATE_CAPACITY",
+        severity: packable ? "PASS" : "BLOCKING",
+        title: "Daily session packing",
+        scopeLabel: row.label,
+        weekStartDate: dateKey(
+          row.weekStartDate,
+        ),
+        required: row.requiredSessions,
+        available:
+          row.availableTeachingDays *
+          loadProfile.maxSessionsPerDay,
+        unit: "SESSIONS",
+        message: packable
+          ? `${row.label}'s ${row.requiredSessions} session(s) (${sessionMix}) can be distributed across ${row.availableTeachingDays} teaching day(s) within the daily session and teaching-minute limits.`
+          : `${row.label} requires ${row.requiredSessions} session(s) (${sessionMix}) across ${row.availableTeachingDays} teaching day(s). They cannot be distributed within both the ${loadProfile.maxSessionsPerDay}-session and ${loadProfile.maxTeachingMinutesPerDay}-minute daily limits.`,
+        suggestedAction: packable
+          ? null
+          : "Recalculate the Base Plan to move teaching to another week, restore teaching days, or revise the daily session/minute limits.",
       });
     }
   }

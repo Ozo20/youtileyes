@@ -469,26 +469,36 @@ export async function generateBasePlanAllocations(formData: FormData) {
 
   const correlationId = randomUUID();
 
-  await prisma.$transaction(async (tx) => {
-    for (const item of generated) {
-      await tx.teachingRequirementWeek.deleteMany({
-        where: {
-          tenantId,
-          teachingRequirementId: item.requirement.id,
-        },
-      });
+  const requirementIds = generated.map(
+    (item) => item.requirement.id,
+  );
 
+  const weeklyAllocationRows = generated.flatMap((item) =>
+    item.allocations.map((allocation) => ({
+      tenantId,
+      teachingRequirementId: item.requirement.id,
+      weekStartDate: allocation.weekStartDate,
+      targetMinutes: allocation.targetMinutes,
+      minMinutes: item.requirement.minWeeklyMinutes,
+      maxMinutes: item.requirement.maxWeeklyMinutes,
+      availableTeachingDays: allocation.availableTeachingDays,
+      adjustmentReason: allocation.adjustmentReason,
+    })),
+  );
+
+  await prisma.$transaction(async (tx) => {
+    await tx.teachingRequirementWeek.deleteMany({
+      where: {
+        tenantId,
+        teachingRequirementId: {
+          in: requirementIds,
+        },
+      },
+    });
+
+    if (weeklyAllocationRows.length > 0) {
       await tx.teachingRequirementWeek.createMany({
-        data: item.allocations.map((allocation) => ({
-          tenantId,
-          teachingRequirementId: item.requirement.id,
-          weekStartDate: allocation.weekStartDate,
-          targetMinutes: allocation.targetMinutes,
-          minMinutes: item.requirement.minWeeklyMinutes,
-          maxMinutes: item.requirement.maxWeeklyMinutes,
-          availableTeachingDays: allocation.availableTeachingDays,
-          adjustmentReason: allocation.adjustmentReason,
-        })),
+        data: weeklyAllocationRows,
       });
     }
 
