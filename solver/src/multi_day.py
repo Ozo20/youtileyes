@@ -1596,11 +1596,11 @@ def solve_multi_day_week(
         if selector_count < 150_000:
             complexity_budget_seconds = 30.0
         elif selector_count < 400_000:
-            complexity_budget_seconds = 60.0
+            complexity_budget_seconds = 120.0
         elif selector_count < 800_000:
-            complexity_budget_seconds = 300.0
+            complexity_budget_seconds = 600.0
         elif selector_count < 1_500_000:
-            complexity_budget_seconds = 450.0
+            complexity_budget_seconds = 600.0
         elif selector_count < 3_000_000:
             complexity_budget_seconds = 600.0
         else:
