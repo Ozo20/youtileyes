@@ -1613,10 +1613,10 @@ def solve_multi_day_week(
     else:
         solver_time_budget_seconds = max(0.01, float(max_time_seconds))
 
-    if selector_count < 400_000:
+    if selector_count < 150_000:
         solver_worker_count = 8
-    elif selector_count < 1_000_000:
-        solver_worker_count = 6
+    elif selector_count < 400_000:
+        solver_worker_count = 4
     else:
         solver_worker_count = 2
 
