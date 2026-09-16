@@ -281,6 +281,10 @@ def _run_planning_horizon(
             student_break_rules=list(payload.student_break_rules),
             instructor_break_rules=list(payload.instructor_break_rules),
             latest_end_minute=payload.latest_end_minute,
+            time_blocks=[
+                (block.start_minute, block.end_minute)
+                for block in payload.time_blocks
+            ],
         )
 
         week_statuses[week_start] = result.status
@@ -388,6 +392,6 @@ def run_solver(
     payload: SolverInput,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> SolverOutput:
-    if payload.schema_version in {"1.2", "1.3", "1.4"}:
+    if payload.schema_version in {"1.2", "1.3", "1.4", "1.5"}:
         return _run_planning_horizon(payload, progress_callback)
     return _run_single_day(payload)

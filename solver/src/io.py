@@ -16,12 +16,13 @@ from .contracts import (
     SolverOutput,
     TeachingGroupInput,
     TeachingOccurrenceInput,
+    TimeBlockInput,
     TravelInput,
     solver_output_to_dict,
 )
 
 
-SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2", "1.3", "1.4"}
+SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1", "1.2", "1.3", "1.4", "1.5"}
 
 
 class SolverInputError(ValueError):
@@ -297,7 +298,7 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
     student_blocks: tuple[ResourceBlockInput, ...] = ()
     room_blocks: tuple[ResourceBlockInput, ...] = ()
 
-    if schema_version in {"1.2", "1.3", "1.4"}:
+    if schema_version in {"1.2", "1.3", "1.4", "1.5"}:
         window = _required(data, "planningWindow")
         planning_window = PlanningWindowInput(
             as_of_date=str(_required(window, "asOfDate")),
@@ -348,6 +349,13 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
             int(data["latestEndMinute"])
             if data.get("latestEndMinute") is not None
             else None
+        ),
+        time_blocks=tuple(
+            TimeBlockInput(
+                start_minute=int(item["startMinute"]),
+                end_minute=int(item["endMinute"]),
+            )
+            for item in data.get("timeBlocks", [])
         ),
         instructors=instructors,
         rooms=rooms,

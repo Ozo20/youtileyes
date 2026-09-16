@@ -97,6 +97,12 @@ class TeachingOccurrenceInput:
 
 
 @dataclass(frozen=True)
+class TimeBlockInput:
+    start_minute: int
+    end_minute: int
+
+
+@dataclass(frozen=True)
 class ResourceBlockInput:
     resource_id: str
     date: str
@@ -116,6 +122,7 @@ class SolverInput:
     travel: tuple[TravelInput, ...]
     student_load_profile: LoadProfileInput
     latest_end_minute: int | None = None
+    time_blocks: tuple[TimeBlockInput, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # 1.0/1.1 single-day compatibility.

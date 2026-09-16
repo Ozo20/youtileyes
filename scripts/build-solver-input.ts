@@ -12,7 +12,7 @@ import {
 
 import { prisma } from "../src/lib/prisma";
 
-const SCHEMA_VERSION = "1.4";
+const SCHEMA_VERSION = "1.5";
 const DEFAULT_OUTPUT_PATH = "/tmp/youtileyes_solver_input.json";
 
 function parseArgs() {
@@ -668,6 +668,10 @@ async function main() {
     },
     startTimes: solverStartTimes,
     latestEndMinute,
+    timeBlocks: activeTimeBlocks.map((block) => ({
+      startMinute: block.startMinute,
+      endMinute: block.endMinute,
+    })),
     instructors: instructors.map((instructor) => ({
       id: instructor.id,
       name: `${instructor.firstName} ${instructor.lastName}`,

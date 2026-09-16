@@ -376,6 +376,7 @@ def solve_multi_day_week(
     student_break_rules: list[dict] | None = None,
     instructor_break_rules: list[dict] | None = None,
     latest_end_minute: int | None = None,
+    time_blocks: list[tuple[int, int]] | None = None,
     max_time_seconds: float | None = None,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> MultiDayScheduleResult:
@@ -394,11 +395,19 @@ def solve_multi_day_week(
     instructor_blocks = instructor_blocks or []
     student_blocks = student_blocks or []
     room_blocks = room_blocks or []
+    time_blocks = time_blocks or []
 
     if not start_times:
         raise MultiDayScheduleError("At least one start time is required.")
 
     unique_start_times = sorted(set(start_times))
+    normalized_time_blocks = sorted(
+        {
+            (start, end)
+            for start, end in time_blocks
+            if end > start
+        }
+    )
     group_by_id = {group.id: group for group in groups}
     instructor_by_id = {item.id: item for item in instructors}
     room_by_id = {item.id: item for item in rooms}
@@ -509,10 +518,51 @@ def solve_multi_day_week(
         )
 
         valid_date_count = 0
+
+        # Schema 1.5 uses TimeBlock starts as teaching start anchors.
+        # Longer continuous sessions may bridge short transition gaps,
+        # but must not span a long schedule gap such as lunch.
+        if normalized_time_blocks:
+            long_gap_threshold = student_profile.min_lunch_minutes
+
+            def crosses_long_gap(start: int, end: int) -> bool:
+                if long_gap_threshold is None or long_gap_threshold <= 0:
+                    return False
+
+                for (_, left_end), (right_start, _) in zip(
+                    normalized_time_blocks,
+                    normalized_time_blocks[1:],
+                ):
+                    gap = right_start - left_end
+                    if (
+                        gap >= long_gap_threshold
+                        and start < right_start
+                        and end > left_end
+                    ):
+                        return True
+
+                return False
+
+            candidate_starts = tuple(
+                start
+                for start, _ in normalized_time_blocks
+                if (
+                    latest_end_minute is None
+                    or start + occurrence.duration_minutes <= latest_end_minute
+                )
+                and not crosses_long_gap(
+                    start,
+                    start + occurrence.duration_minutes,
+                )
+            )
+        else:
+            # Backward-compatible fallback for payloads without TimeBlocks.
+            candidate_starts = tuple(unique_start_times)
+
         for date in occurrence.allowed_dates:
             valid_starts = tuple(
                 start
-                for start in unique_start_times
+                for start in candidate_starts
                 if (
                     latest_end_minute is None
                     or start + occurrence.duration_minutes <= latest_end_minute
