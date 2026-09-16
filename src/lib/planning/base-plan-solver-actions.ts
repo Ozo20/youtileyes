@@ -13,6 +13,7 @@ import {
 } from "../../generated/prisma/client";
 
 import { writeAuditEvent } from "@/lib/audit";
+import { getPlanningAnalysis } from "@/lib/planning/planning-analysis-data";
 import { prisma } from "@/lib/prisma";
 
 const DEMO_ACTOR = {
@@ -203,6 +204,23 @@ export async function generateBasePlanScenario(
   if (allocationCount === 0) {
     throw new Error(
       "Base Plan has no weekly allocations. Generate weekly allocation first.",
+    );
+  }
+
+  const planningAnalysis =
+    await getPlanningAnalysis(plan.id);
+
+  if (!planningAnalysis.canRunSolver) {
+    const firstBlocking =
+      planningAnalysis.checks.find(
+        (check) =>
+          check.severity === "BLOCKING",
+      );
+
+    throw new Error(
+      firstBlocking
+        ? `Planning analysis blocked timetable generation: ${firstBlocking.message}`
+        : "Planning analysis blocked timetable generation.",
     );
   }
 

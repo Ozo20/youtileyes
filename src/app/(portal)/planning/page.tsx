@@ -12,6 +12,7 @@ import { BasePlanGenerationStatus } from "@/components/planning/base-plan-genera
 import { BasePlanPublishPanel } from "@/components/planning/base-plan-publish-panel";
 import { BasePlanWorkflowStepper } from "@/components/planning/base-plan-workflow-stepper";
 import { PlanningReviewPanel } from "@/components/planning/planning-review-panel";
+import { PlanningAnalysisPanel } from "@/components/planning/planning-analysis-panel";
 import { RecoveryApprovalPanel } from "@/components/planning/recovery-approval-panel";
 import { RecoveryPublishPanel } from "@/components/planning/recovery-publish-panel";
 import { PublishedRevisionPanel } from "@/components/planning/published-revision-panel";
@@ -32,10 +33,10 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
 import {
-  getPlanFeasibility,
   jsonNumber,
   jsonRecord,
 } from "@/lib/planning/workspace-data";
+import { getPlanningAnalysis } from "@/lib/planning/planning-analysis-data";
 import { generateBasePlanScenario } from "@/lib/planning/base-plan-solver-actions";
 import { getTenantContext } from "@/lib/access/tenant-context";
 import { prisma } from "@/lib/prisma";
@@ -90,11 +91,6 @@ function toneForStatus(status: string) {
   return "neutral" as const;
 }
 
-function feasibilityTone(status: string) {
-  if (status === "GREEN") return "success" as const;
-  if (status === "AMBER") return "warning" as const;
-  return "danger" as const;
-}
 
 function generationType(value: unknown) {
   const record = jsonRecord(value);
@@ -240,7 +236,7 @@ export default async function PlanningPage({
 
   const [
     scenarios,
-    feasibility,
+    planningAnalysis,
     instructors,
     rooms,
     recentJobs,
@@ -280,7 +276,7 @@ export default async function PlanningPage({
         createdAt: "desc",
       },
     }),
-    getPlanFeasibility(tenant.id, plan),
+    getPlanningAnalysis(plan.id),
     prisma.instructor.findMany({
       where: {
         tenantId: tenant.id,
@@ -805,24 +801,24 @@ export default async function PlanningPage({
         />
 
         <StatCard
-          label="Feasibility"
-          value={feasibility?.status ?? "—"}
-          detail={
-            feasibility
-              ? `${feasibility.counts.GREEN} green · ${feasibility.counts.AMBER} amber · ${feasibility.counts.RED} red`
-              : "Planning horizon is incomplete"
+          label="Planning analysis"
+          value={
+            planningAnalysis.canRunSolver
+              ? "READY"
+              : "ACTION REQUIRED"
           }
+          detail={`${planningAnalysis.counts.blocking} blocking · ${planningAnalysis.counts.warning} warnings`}
           icon={
-            feasibility?.status === "GREEN" ? (
+            planningAnalysis.canRunSolver ? (
               <CheckCircle2 size={17} />
             ) : (
               <TriangleAlert size={17} />
             )
           }
           tone={
-            feasibility
-              ? feasibilityTone(feasibility.status)
-              : "neutral"
+            planningAnalysis.canRunSolver
+              ? "success"
+              : "danger"
           }
         />
 
@@ -852,7 +848,11 @@ export default async function PlanningPage({
       {basePlanLifecycleActive ? (
         <BasePlanWorkflowStepper
           planStatus={plan.status}
-          hasRequirements={Boolean(feasibility?.requirements.length)}
+          hasRequirements={
+            !planningAnalysis.checks.some(
+              (check) => check.id === "no-requirements",
+            )
+          }
           hasProposal={hasBasePlanProposal}
           proposalAccepted={Boolean(acceptedBasePlanScenario)}
         />
@@ -911,132 +911,21 @@ export default async function PlanningPage({
               </div>
             </div>
 
-            {["DRAFT", "GENERATED", "REVIEWED"].includes(
-              plan.status,
-            ) ? (
-              <div id="base-plan-calculate" className="planning-scenario-actions">
-                <div>
-                  <CalendarClock size={16} />
-                  <span>
-                    Calculate a new timetable proposal from the
-                    requirements and weekly allocations in Base Plan
-                    v{plan.version}.
-                  </span>
-                </div>
-
-                <form action={generateBasePlanScenario}>
-                  <input
-                    type="hidden"
-                    name="planId"
-                    value={plan.id}
-                  />
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    disabled={basePlanGenerationActive}
-                  >
-                    {basePlanGenerationActive
-                      ? "Generation in progress"
-                      : "Generate Base Plan proposal"}
-                  </Button>
-                </form>
-
-                <BasePlanGenerationStatus job={basePlanJob} />
-              </div>
-            ) : null}
-
 </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <div>
-              <span className="eyebrow">Feasibility</span>
-              <h2>Requirement capacity</h2>
-            </div>
-
-            {feasibility ? (
-              <Badge tone={feasibilityTone(feasibility.status)}>
-                {feasibility.status}
-              </Badge>
-            ) : null}
-          </CardHeader>
-
-          <CardContent className="planning-feasibility-list">
-            {!feasibility ? (
-              <p className="planning-muted">
-                Planning start/end dates are required before
-                feasibility can be calculated.
-              </p>
-            ) : feasibility.requirements.length === 0 ? (
-              <p className="planning-muted">
-                No active teaching requirements were found.
-              </p>
-            ) : (
-              <details className="planning-feasibility-details">
-                <summary>
-                  {feasibility.counts.RED > 0 || feasibility.counts.AMBER > 0
-                    ? `Show all ${feasibility.requirements.length} requirement details · ${feasibility.counts.RED} red · ${feasibility.counts.AMBER} amber`
-                    : `All ${feasibility.requirements.length} requirements are within estimated capacity · show details`}
-                </summary>
-                {feasibility.requirements.map((requirement) => (
-                <div
-                  key={requirement.requirementId}
-                  className="planning-feasibility-row"
-                >
-                  <div className="planning-feasibility-heading">
-                    <div>
-                      <strong>
-                        {requirement.groupCode} ·{" "}
-                        {requirement.courseCode ??
-                          requirement.courseName}
-                      </strong>
-                      <span>{requirement.courseName}</span>
-                    </div>
-
-                    <Badge
-                      tone={feasibilityTone(
-                        requirement.status,
-                      )}
-                    >
-                      {requirement.status}
-                    </Badge>
-                  </div>
-
-                  <div className="planning-feasibility-metrics">
-                    <span>
-                      Required{" "}
-                      <strong>
-                        {requirement.requiredMinutes} min
-                      </strong>
-                    </span>
-                    <span>
-                      Capacity{" "}
-                      <strong>
-                        {requirement.estimatedCapacityMinutes} min
-                      </strong>
-                    </span>
-                    <span>
-                      Margin{" "}
-                      <strong>
-                        {requirement.marginMinutes >= 0
-                          ? "+"
-                          : ""}
-                        {requirement.marginMinutes} min
-                      </strong>
-                    </span>
-                  </div>
-
-                  {requirement.reasons.length > 0 ? (
-                    <p>{requirement.reasons[0]}</p>
-                  ) : null}
-                </div>
-              ))}
-              </details>
-            )}
-          </CardContent>
-        </Card>
       </div>
+
+      {["DRAFT", "GENERATED", "REVIEWED"].includes(
+        plan.status,
+      ) ? (
+        <PlanningAnalysisPanel
+          analysis={planningAnalysis}
+          planId={plan.id}
+          generationActive={basePlanGenerationActive}
+          job={basePlanJob}
+        />
+      ) : null}
 
       <div className="planning-revision-summary">
         <PlanRevisionTimeline revisions={revisionHistory} compact />

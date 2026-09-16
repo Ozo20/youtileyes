@@ -1,6 +1,11 @@
 import { performance } from "node:perf_hooks";
 
 import { prisma } from "../src/lib/prisma";
+import {
+  distributeMinutes,
+  rebalanceCohortWeeklyCapacity,
+  type CohortCapacityItem,
+} from "../src/lib/planning/base-plan";
 
 type ScaleProfileName = "S" | "M" | "L" | "XL";
 
@@ -1056,7 +1061,10 @@ async function main() {
   }
 
   const cohortCount = Math.ceil(profile.students / profile.cohortSize);
-  const cohorts = [];
+  const cohorts: Array<{
+    id: string;
+    code: string;
+  }> = [];
   for (let index = 0; index < cohortCount; index += 1) {
     const code = `CL${String(index + 1).padStart(3, "0")}`;
     const cohort = await prisma.studentCohort.upsert({
@@ -1082,7 +1090,10 @@ async function main() {
         code,
       },
     });
-    cohorts.push(cohort);
+    cohorts.push({
+      id: cohort.id,
+      code: cohort.code ?? code,
+    });
   }
 
   const students = [];
@@ -1174,6 +1185,58 @@ async function main() {
     }
     weeklyTeachingDays.set(dateOnlyIso(weekStart), availableDays);
   }
+
+  // Materialise deterministic cohort activity days before Base Plan
+  // allocations so weekly capacity and solver input describe the same world.
+  await prisma.planningException.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      name: { startsWith: "Scale activity day" },
+    },
+  });
+
+  const scaleActivityEvents = Array.from(
+    { length: profile.cohortActivityEvents },
+    (_, index) => {
+      const cohort = cohorts[index % cohorts.length];
+      const date = addUtcDays(
+        new Date("2026-08-17T00:00:00.000Z"),
+        14 + ((index * 11) % 90),
+      );
+
+      return {
+        index,
+        cohort,
+        dateKey: dateOnlyIso(date),
+      };
+    },
+  );
+
+  const activityDatesByCohortId = new Map<string, Set<string>>();
+
+  for (const event of scaleActivityEvents) {
+    const activityDates =
+      activityDatesByCohortId.get(event.cohort.id) ?? new Set<string>();
+
+    activityDates.add(event.dateKey);
+    activityDatesByCohortId.set(event.cohort.id, activityDates);
+
+    await prisma.planningException.create({
+      data: {
+        tenantId: tenant.id,
+        studentCohortId: event.cohort.id,
+        type: "ACTIVITY_DAY",
+        status: "ACTIVE",
+        impactMode: "BLOCK",
+        name: `Scale activity day ${String(event.index + 1).padStart(3, "0")}`,
+        description: `Deterministic scale benchmark activity for ${event.cohort.code}.`,
+        startAt: new Date(`${event.dateKey}T06:00:00.000Z`),
+        endAt: new Date(`${event.dateKey}T16:00:00.000Z`),
+      },
+    });
+  }
+
+  const basePlanAllocationItems: CohortCapacityItem[] = [];
 
   const studentRequirementRows: Array<{
     tenantId: string;
@@ -1307,42 +1370,89 @@ async function main() {
           priority,
         },
       });
+
       teachingRequirementCount += 1;
 
-      for (const weekStart of weekStarts) {
-        const availableDays =
-          weeklyTeachingDays.get(dateOnlyIso(weekStart)) ?? 0;
-        const target = availableDays > 0 ? weeklyMinutes : 0;
-        await prisma.teachingRequirementWeek.upsert({
-          where: {
-            tenantId_teachingRequirementId_weekStartDate: {
-              tenantId: tenant.id,
-              teachingRequirementId: requirement.id,
-              weekStartDate: weekStart,
-            },
-          },
-          update: {
-            targetMinutes: target,
-            minMinutes:
-              availableDays > 0 ? Math.max(45, weeklyMinutes - 45) : 0,
-            maxMinutes: availableDays > 0 ? weeklyMinutes + 45 : 0,
-            availableTeachingDays: availableDays,
-            adjustmentReason: availableDays === 0 ? "Autumn break" : null,
-          },
-          create: {
-            tenantId: tenant.id,
-            teachingRequirementId: requirement.id,
-            weekStartDate: weekStart,
-            targetMinutes: target,
-            minMinutes:
-              availableDays > 0 ? Math.max(45, weeklyMinutes - 45) : 0,
-            maxMinutes: availableDays > 0 ? weeklyMinutes + 45 : 0,
-            availableTeachingDays: availableDays,
-            adjustmentReason: availableDays === 0 ? "Autumn break" : null,
-          },
-        });
-        teachingRequirementWeekCount += 1;
-      }
+      const cohortActivityDates =
+        activityDatesByCohortId.get(cohorts[cohortIndex].id) ??
+        new Set<string>();
+
+      const weeks = weekStarts.map((weekStart) => {
+        let calendarTeachingDays = 0;
+        let availableTeachingDays = 0;
+        let blockedByActivity = false;
+
+        for (let offset = 0; offset < 5; offset += 1) {
+          const date = addUtcDays(weekStart, offset);
+          const dateKey = dateOnlyIso(date);
+
+          const autumnBreak =
+            date >= new Date("2026-10-05T00:00:00.000Z") &&
+            date <= new Date("2026-10-09T00:00:00.000Z");
+
+          if (autumnBreak) {
+            continue;
+          }
+
+          calendarTeachingDays += 1;
+
+          if (cohortActivityDates.has(dateKey)) {
+            blockedByActivity = true;
+            continue;
+          }
+
+          availableTeachingDays += 1;
+        }
+
+        return {
+          weekStartDate: weekStart,
+          calendarTeachingDays,
+          availableTeachingDays,
+          adjustmentReason:
+            calendarTeachingDays === 0
+              ? "Autumn break"
+              : blockedByActivity
+                ? "Blocking planning exception reduces teaching capacity"
+                : null,
+        };
+      });
+
+      const minWeeklyMinutes = Math.max(45, weeklyMinutes - 45);
+      const maxWeeklyMinutes = weeklyMinutes + 45;
+
+      const quantumMinutes = Math.max(
+        course.minSessionMinutes ?? 45,
+        1,
+      );
+
+      const sessionMinutes = Math.max(
+        course.preferredSessionMinutes ??
+          course.minSessionMinutes ??
+          45,
+        1,
+      );
+
+      const allocations = distributeMinutes({
+        totalMinutes: targetMinutes,
+        quantumMinutes,
+        minWeeklyMinutes,
+        preferredWeeklyMinutes: weeklyMinutes,
+        maxWeeklyMinutes,
+        mode: "EVEN_BY_TEACHING_CAPACITY",
+        weeks,
+      });
+
+      basePlanAllocationItems.push({
+        id: requirement.id,
+        cohortId: cohorts[cohortIndex].id,
+        priority,
+        carryoverAllowed: true,
+        minWeeklyMinutes,
+        maxWeeklyMinutes,
+        quantumMinutes,
+        sessionMinutes,
+        allocations,
+      });
 
       for (const student of studentsByCohort[cohortIndex]) {
         studentRequirementRows.push({
@@ -1358,6 +1468,59 @@ async function main() {
       }
     }
   }
+
+  const rebalancedBasePlanAllocations =
+    rebalanceCohortWeeklyCapacity({
+      items: basePlanAllocationItems,
+      limits: {
+        maxSessionsPerDay: loadProfile.maxSessionsPerDay,
+        maxTeachingMinutesPerDay: loadProfile.maxTeachingMinutesPerDay,
+      },
+    });
+
+  const requirementIds = rebalancedBasePlanAllocations.map(
+    (item) => item.id,
+  );
+
+  await prisma.teachingRequirementWeek.deleteMany({
+    where: {
+      tenantId: tenant.id,
+      teachingRequirementId: {
+        in: requirementIds,
+      },
+    },
+  });
+
+  const teachingRequirementWeekRows =
+    rebalancedBasePlanAllocations.flatMap((item) =>
+      item.allocations.map((allocation) => ({
+        tenantId: tenant.id,
+        teachingRequirementId: item.id,
+        weekStartDate: allocation.weekStartDate,
+        targetMinutes: allocation.targetMinutes,
+        minMinutes:
+          allocation.availableTeachingDays > 0
+            ? item.minWeeklyMinutes
+            : 0,
+        maxMinutes:
+          allocation.availableTeachingDays > 0
+            ? item.maxWeeklyMinutes
+            : 0,
+        availableTeachingDays: allocation.availableTeachingDays,
+        adjustmentReason: allocation.adjustmentReason,
+      })),
+    );
+
+  await createManyInBatches(
+    teachingRequirementWeekRows,
+    (batch) =>
+      prisma.teachingRequirementWeek.createMany({
+        data: batch,
+      }),
+  );
+
+  teachingRequirementWeekCount =
+    teachingRequirementWeekRows.length;
 
   await prisma.studentCourseRequirement.deleteMany({
     where: {
@@ -1437,34 +1600,6 @@ async function main() {
   await prisma.roomAvailability.createMany({
     data: roomAvailabilityRows,
   });
-
-  await prisma.planningException.deleteMany({
-    where: {
-      tenantId: tenant.id,
-      name: { startsWith: "Scale activity day" },
-    },
-  });
-
-  for (let index = 0; index < profile.cohortActivityEvents; index += 1) {
-    const cohort = cohorts[index % cohorts.length];
-    const date = addUtcDays(
-      new Date("2026-08-17T00:00:00.000Z"),
-      14 + ((index * 11) % 90),
-    );
-    await prisma.planningException.create({
-      data: {
-        tenantId: tenant.id,
-        studentCohortId: cohort.id,
-        type: "ACTIVITY_DAY",
-        status: "ACTIVE",
-        impactMode: "BLOCK",
-        name: `Scale activity day ${String(index + 1).padStart(3, "0")}`,
-        description: `Deterministic scale benchmark activity for ${cohort.code}.`,
-        startAt: new Date(`${dateOnlyIso(date)}T06:00:00.000Z`),
-        endAt: new Date(`${dateOnlyIso(date)}T16:00:00.000Z`),
-      },
-    });
-  }
 
   await prisma.planningRule.deleteMany({
     where: {

@@ -2026,3 +2026,449 @@
   font-size: 9px;
   line-height: 1.45;
 }
+
+/* PLANNING ANALYSIS */
+
+.planning-primary-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.planning-analysis-card {
+  margin-bottom: 18px;
+}
+
+.planning-analysis-content {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.planning-analysis-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.planning-analysis-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.planning-analysis-summary strong {
+  font-size: 13px;
+}
+
+.planning-analysis-summary span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.planning-analysis-phases {
+  display: grid;
+  grid-template-columns: 1fr;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.planning-analysis-phase {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.planning-analysis-phase:last-child {
+  border-bottom: 0;
+}
+
+.planning-analysis-phase-index {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.planning-analysis-phase-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.planning-analysis-phase-copy strong {
+  font-size: 11px;
+}
+
+.planning-analysis-phase-copy span {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.planning-analysis-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.planning-analysis-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.planning-analysis-section-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.planning-analysis-section-heading strong {
+  font-size: 12px;
+}
+
+.planning-analysis-section-heading > span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.planning-analysis-findings {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.planning-analysis-finding {
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.planning-analysis-finding:last-child {
+  border-bottom: 0;
+}
+
+.planning-analysis-finding-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.planning-analysis-finding-main > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.planning-analysis-finding-main strong {
+  font-size: 11px;
+}
+
+.planning-analysis-finding-main span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.planning-analysis-finding p {
+  margin: 7px 0 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.planning-analysis-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.planning-analysis-metrics strong {
+  color: var(--text-primary);
+}
+
+.planning-analysis-action {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 9px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.planning-analysis-action strong {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.planning-analysis-action span {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.planning-analysis-passed {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.planning-analysis-passed summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.planning-analysis-passed-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.planning-analysis-passed-list > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.planning-analysis-run {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.planning-analysis-run > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.planning-analysis-run > div > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.planning-analysis-run strong {
+  font-size: 11px;
+}
+
+.planning-analysis-run span {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.planning-analysis-run form {
+  flex: 0 0 auto;
+}
+
+.planning-analysis-run .ui-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+@media (max-width: 760px) {
+  .planning-analysis-run {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .planning-analysis-run form,
+  .planning-analysis-run .ui-button {
+    width: 100%;
+  }
+
+  .planning-analysis-run .ui-button {
+    justify-content: center;
+  }
+}
+
+/* PLANNING ANALYSIS — ADVISORY SUMMARY */
+
+.planning-analysis-advisories {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.planning-analysis-advisories > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 14px;
+}
+
+.planning-analysis-advisories > summary::-webkit-details-marker,
+.planning-analysis-advisory-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.planning-analysis-advisories > summary > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.planning-analysis-advisories > summary > div > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.planning-analysis-advisories > summary strong {
+  font-size: 11px;
+}
+
+.planning-analysis-advisories > summary span {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.planning-analysis-advisories[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.planning-analysis-advisories > summary > svg:last-child {
+  flex: 0 0 auto;
+  transition: transform 140ms ease;
+}
+
+.planning-analysis-advisories[open] > summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.planning-analysis-advisory-groups {
+  display: grid;
+}
+
+.planning-analysis-advisory-group {
+  border-bottom: 1px solid var(--border);
+}
+
+.planning-analysis-advisory-group:last-child {
+  border-bottom: 0;
+}
+
+.planning-analysis-advisory-group > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 14px;
+}
+
+.planning-analysis-advisory-group > summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.planning-analysis-advisory-group > summary strong {
+  font-size: 11px;
+}
+
+.planning-analysis-advisory-group > summary span {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.planning-analysis-advisory-count {
+  flex: 0 0 auto;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.planning-analysis-advisory-group[open] > summary {
+  background: var(--surface-subtle);
+}
+
+.planning-analysis-advisory-details {
+  display: grid;
+  padding: 0 14px 10px;
+}
+
+.planning-analysis-advisory-detail {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.planning-analysis-advisory-detail:first-child {
+  border-top: 0;
+}
+
+.planning-analysis-advisory-detail > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.planning-analysis-advisory-detail strong {
+  font-size: 10px;
+}
+
+.planning-analysis-advisory-detail span {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.planning-analysis-advisory-detail p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
