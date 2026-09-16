@@ -66,7 +66,7 @@ class _ResourceOption:
     instructor_ids: tuple[str, ...]
     staffing_roles: tuple[str, ...]
     assignment_penalty: int
-    allowed_date: str | None = None
+    allowed_dates: tuple[str, ...] = ()
 
 
 class MultiDayScheduleError(RuntimeError):
@@ -220,7 +220,7 @@ def _resource_options(
             result.append(
                 _ResourceOption(
                     room_id=room.id,
-                    allowed_date=date,
+                    allowed_dates=((date,) if date is not None else ()),
                     instructor_ids=instructor_ids,
                     staffing_roles=staffing_roles,
                     assignment_penalty=(
@@ -428,6 +428,9 @@ def solve_multi_day_week(
     room_choice_counts: list[int] = []
     instructor_choice_counts: list[int] = []
     staffing_combo_counts_per_date_room: list[int] = []
+    raw_resource_option_counts_by_occurrence_date: dict[
+        tuple[str, str], int
+    ] = {}
 
     for occurrence in occurrences:
         group = group_by_id.get(occurrence.teaching_group_id)
@@ -437,7 +440,10 @@ def solve_multi_day_week(
                 f"{occurrence.teaching_group_id}"
             )
 
-        options: list[_ResourceOption] = []
+        merged_option_dates: dict[
+            tuple[str, tuple[str, ...], tuple[str, ...], int],
+            set[str],
+        ] = {}
 
         for date in occurrence.allowed_dates:
             date_options = _resource_options(
@@ -446,15 +452,41 @@ def solve_multi_day_week(
                 rooms=rooms,
                 date=date,
             )
-            options.extend(date_options)
+            raw_resource_option_counts_by_occurrence_date[
+                (occurrence.id, date)
+            ] = len(date_options)
 
             options_by_room: dict[str, int] = defaultdict(int)
             for option in date_options:
                 options_by_room[option.room_id] += 1
 
+                merge_key = (
+                    option.room_id,
+                    option.instructor_ids,
+                    option.staffing_roles,
+                    option.assignment_penalty,
+                )
+                merged_option_dates.setdefault(merge_key, set()).add(date)
+
             staffing_combo_counts_per_date_room.extend(
                 options_by_room.values()
             )
+
+        options = [
+            _ResourceOption(
+                room_id=room_id,
+                instructor_ids=instructor_ids,
+                staffing_roles=staffing_roles,
+                assignment_penalty=assignment_penalty,
+                allowed_dates=tuple(sorted(allowed_dates)),
+            )
+            for (
+                room_id,
+                instructor_ids,
+                staffing_roles,
+                assignment_penalty,
+            ), allowed_dates in merged_option_dates.items()
+        ]
 
         if not options:
             raise MultiDayScheduleError(
@@ -496,7 +528,13 @@ def solve_multi_day_week(
 
             valid_starts_by_occurrence_date[(occurrence.id, date)] = valid_starts
             placement_domain_size += len(valid_starts)
-            legacy_candidate_equivalent += len(valid_starts) * len(options)
+            legacy_candidate_equivalent += (
+                len(valid_starts)
+                * raw_resource_option_counts_by_occurrence_date.get(
+                    (occurrence.id, date),
+                    0,
+                )
+            )
             valid_date_count += 1
 
         if valid_date_count == 0:
@@ -641,9 +679,17 @@ def solve_multi_day_week(
             )
             option_vars[(occurrence.id, option_index)] = option_var
             occurrence_option_vars.append(option_var)
-            if option.allowed_date is not None:
-                matching_date = date_vars.get((occurrence.id, option.allowed_date))
-                model.add(option_var <= matching_date if matching_date is not None else option_var == 0)
+            if option.allowed_dates:
+                matching_dates = [
+                    date_vars[(occurrence.id, date)]
+                    for date in option.allowed_dates
+                    if (occurrence.id, date) in date_vars
+                ]
+                if matching_dates:
+                    model.add(option_var <= sum(matching_dates))
+                else:
+                    model.add(option_var == 0)
+
             room_to_options[option.room_id].append(option_var)
             for instructor_id in option.instructor_ids:
                 instructor_to_options[instructor_id].append(option_var)
@@ -671,36 +717,87 @@ def solve_multi_day_week(
 
     preference_penalty_vars = []
     for occurrence in occurrences:
-        for option_index, option in enumerate(resource_options_by_occurrence[occurrence.id]):
-            date = option.allowed_date
-            key = (occurrence.id, date)
-            if key not in start_vars:
-                continue
-            applicable = [r for r in placement_rules
-                          if r["date"] == date
-                          and (not r.get("groupId") or r["groupId"] == occurrence.teaching_group_id)
-                          and (not r.get("instructorId") or r["instructorId"] in option.instructor_ids)
-                          and (not r.get("roomId") or r["roomId"] == option.room_id)]
-            if not applicable:
-                continue
-            rows = []
-            for start in valid_starts_by_occurrence_date[key]:
-                penalty = 0
-                blocked = False
-                for rule in applicable:
-                    overlap = max(0, min(start + occurrence.duration_minutes, rule["endMinute"]) - max(start, rule["startMinute"]))
-                    blocked |= bool(overlap and rule["hard"])
-                    penalty += overlap * rule["weight"] if not rule["hard"] else 0
-                if not blocked:
-                    rows.append([start, penalty])
+        for option_index, option in enumerate(
+            resource_options_by_occurrence[occurrence.id]
+        ):
             selected = option_vars[(occurrence.id, option_index)]
-            if not rows:
-                model.add(selected == 0)
-                continue
-            cost = model.new_int_var(0, max(row[1] for row in rows), f"preference_{occurrence.id}_{option_index}")
-            model.add_allowed_assignments([start_vars[key], cost], rows).only_enforce_if(selected)
-            model.add(cost == 0).only_enforce_if(selected.Not())
-            preference_penalty_vars.append(cost)
+
+            for date in option.allowed_dates:
+                key = (occurrence.id, date)
+                date_selected = date_vars.get(key)
+
+                if key not in start_vars or date_selected is None:
+                    continue
+
+                applicable = [
+                    rule
+                    for rule in placement_rules
+                    if rule["date"] == date
+                    and (
+                        not rule.get("groupId")
+                        or rule["groupId"] == occurrence.teaching_group_id
+                    )
+                    and (
+                        not rule.get("instructorId")
+                        or rule["instructorId"] in option.instructor_ids
+                    )
+                    and (
+                        not rule.get("roomId")
+                        or rule["roomId"] == option.room_id
+                    )
+                ]
+
+                if not applicable:
+                    continue
+
+                rows = []
+                for start in valid_starts_by_occurrence_date[key]:
+                    penalty = 0
+                    blocked = False
+
+                    for rule in applicable:
+                        overlap = max(
+                            0,
+                            min(
+                                start + occurrence.duration_minutes,
+                                rule["endMinute"],
+                            )
+                            - max(start, rule["startMinute"]),
+                        )
+                        blocked |= bool(overlap and rule["hard"])
+                        penalty += (
+                            overlap * rule["weight"]
+                            if not rule["hard"]
+                            else 0
+                        )
+
+                    if not blocked:
+                        rows.append([start, penalty])
+
+                if not rows:
+                    # This resource option remains valid on its other dates,
+                    # but may not be combined with this particular date.
+                    model.add(selected + date_selected <= 1)
+                    continue
+
+                cost = model.new_int_var(
+                    0,
+                    max(row[1] for row in rows),
+                    (
+                        f"preference_{occurrence.id}_{option_index}_"
+                        f"{date}"
+                    ),
+                )
+
+                model.add_allowed_assignments(
+                    [start_vars[key], cost],
+                    rows,
+                ).only_enforce_if([selected, date_selected])
+
+                model.add(cost == 0).only_enforce_if(selected.Not())
+                model.add(cost == 0).only_enforce_if(date_selected.Not())
+
+                preference_penalty_vars.append(cost)
 
     # Room and instructor overlap/availability use optional fixed-size intervals.
     # Presence is the conjunction of selected date and selected resource.
