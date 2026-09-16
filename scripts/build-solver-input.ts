@@ -32,6 +32,7 @@ function parseArgs() {
   };
 }
 
+
 function clock(hour: number, minute: number): number {
   return hour * 60 + minute;
 }
@@ -147,6 +148,40 @@ async function main() {
   }
 
   const { plan } = scenario;
+
+  const activeTimeBlocks = await prisma.timeBlock.findMany({
+    where: {
+      tenantId: tenant.id,
+      active: true,
+    },
+    select: {
+      startMinute: true,
+      endMinute: true,
+    },
+    orderBy: {
+      startMinute: "asc",
+    },
+  });
+
+  if (activeTimeBlocks.length === 0) {
+    throw new Error("At least one active TimeBlock is required.");
+  }
+
+  const earliestStartMinute = Math.min(
+    ...activeTimeBlocks.map((block) => block.startMinute),
+  );
+  const latestEndMinute = Math.max(
+    ...activeTimeBlocks.map((block) => block.endMinute),
+  );
+
+  const solverStartTimes: number[] = [];
+  for (
+    let minute = earliestStartMinute;
+    minute < latestEndMinute;
+    minute += 15
+  ) {
+    solverStartTimes.push(minute);
+  }
   if (
     !plan.planningAsOfDate ||
     !plan.planningStartDate ||
@@ -631,32 +666,8 @@ async function main() {
       startDate: dateKey(planningStartDate),
       endDate: dateKey(planningEndDate),
     },
-    startTimes: [
-      clock(8, 15),
-      clock(8, 30),
-      clock(8, 45),
-      clock(9, 0),
-      clock(9, 15),
-      clock(9, 30),
-      clock(9, 45),
-      clock(10, 0),
-      clock(10, 15),
-      clock(10, 30),
-      clock(10, 45),
-      clock(11, 0),
-      clock(11, 15),
-      clock(11, 30),
-      clock(11, 45),
-      clock(12, 0),
-      clock(12, 15),
-      clock(12, 30),
-      clock(12, 45),
-      clock(13, 0),
-      clock(13, 15),
-      clock(13, 30),
-      clock(13, 45),
-      clock(14, 0),
-    ],
+    startTimes: solverStartTimes,
+    latestEndMinute,
     instructors: instructors.map((instructor) => ({
       id: instructor.id,
       name: `${instructor.firstName} ${instructor.lastName}`,

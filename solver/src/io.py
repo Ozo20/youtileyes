@@ -344,6 +344,11 @@ def solver_input_from_dict(data: dict[str, Any]) -> SolverInput:
         plan_scenario_id=str(_required(data, "planScenarioId")),
         date=date,
         start_times=tuple(int(value) for value in _required(data, "startTimes")),
+        latest_end_minute=(
+            int(data["latestEndMinute"])
+            if data.get("latestEndMinute") is not None
+            else None
+        ),
         instructors=instructors,
         rooms=rooms,
         teaching_groups=teaching_groups,

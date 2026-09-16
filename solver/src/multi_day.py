@@ -375,6 +375,7 @@ def solve_multi_day_week(
     placement_rules: list[dict] | None = None,
     student_break_rules: list[dict] | None = None,
     instructor_break_rules: list[dict] | None = None,
+    latest_end_minute: int | None = None,
     max_time_seconds: float | None = None,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> MultiDayScheduleResult:
@@ -512,7 +513,11 @@ def solve_multi_day_week(
             valid_starts = tuple(
                 start
                 for start in unique_start_times
-                if not any(
+                if (
+                    latest_end_minute is None
+                    or start + occurrence.duration_minutes <= latest_end_minute
+                )
+                and not any(
                     _is_blocked(
                         resource_id=student_id,
                         date=date,

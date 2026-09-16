@@ -280,6 +280,7 @@ def _run_planning_horizon(
             placement_rules=list(payload.placement_rules),
             student_break_rules=list(payload.student_break_rules),
             instructor_break_rules=list(payload.instructor_break_rules),
+            latest_end_minute=payload.latest_end_minute,
         )
 
         week_statuses[week_start] = result.status

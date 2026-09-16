@@ -115,6 +115,7 @@ class SolverInput:
     teaching_groups: tuple[TeachingGroupInput, ...]
     travel: tuple[TravelInput, ...]
     student_load_profile: LoadProfileInput
+    latest_end_minute: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # 1.0/1.1 single-day compatibility.
