@@ -424,6 +424,11 @@ def solve_multi_day_week(
     legacy_candidate_equivalent = 0
     placement_domain_size = 0
 
+    resource_option_counts: list[int] = []
+    room_choice_counts: list[int] = []
+    instructor_choice_counts: list[int] = []
+    staffing_combo_counts_per_date_room: list[int] = []
+
     for occurrence in occurrences:
         group = group_by_id.get(occurrence.teaching_group_id)
         if group is None:
@@ -432,15 +437,43 @@ def solve_multi_day_week(
                 f"{occurrence.teaching_group_id}"
             )
 
-        options = [option for date in occurrence.allowed_dates for option in _resource_options(
-            group=group, instructors=instructors, rooms=rooms, date=date,
-        )]
+        options: list[_ResourceOption] = []
+
+        for date in occurrence.allowed_dates:
+            date_options = _resource_options(
+                group=group,
+                instructors=instructors,
+                rooms=rooms,
+                date=date,
+            )
+            options.extend(date_options)
+
+            options_by_room: dict[str, int] = defaultdict(int)
+            for option in date_options:
+                options_by_room[option.room_id] += 1
+
+            staffing_combo_counts_per_date_room.extend(
+                options_by_room.values()
+            )
+
         if not options:
             raise MultiDayScheduleError(
                 f"No valid room/staffing options for occurrence {occurrence.id} "
                 f"(teaching group {group.id})."
             )
         resource_options_by_occurrence[occurrence.id] = options
+
+        resource_option_counts.append(len(options))
+        room_choice_counts.append(
+            len({option.room_id for option in options})
+        )
+        instructor_choice_counts.append(
+            len({
+                instructor_id
+                for option in options
+                for instructor_id in option.instructor_ids
+            })
+        )
 
         valid_date_count = 0
         for date in occurrence.allowed_dates:
@@ -482,6 +515,39 @@ def solve_multi_day_week(
             len(options)
             for options in resource_options_by_occurrence.values()
         ),
+        resourceOptionsPerOccurrence={
+            "min": min(resource_option_counts, default=0),
+            "avg": round(
+                sum(resource_option_counts) / len(resource_option_counts),
+                2,
+            ) if resource_option_counts else 0,
+            "max": max(resource_option_counts, default=0),
+        },
+        roomsPerOccurrence={
+            "min": min(room_choice_counts, default=0),
+            "avg": round(
+                sum(room_choice_counts) / len(room_choice_counts),
+                2,
+            ) if room_choice_counts else 0,
+            "max": max(room_choice_counts, default=0),
+        },
+        instructorsPerOccurrence={
+            "min": min(instructor_choice_counts, default=0),
+            "avg": round(
+                sum(instructor_choice_counts) / len(instructor_choice_counts),
+                2,
+            ) if instructor_choice_counts else 0,
+            "max": max(instructor_choice_counts, default=0),
+        },
+        staffingCombosPerDateRoom={
+            "min": min(staffing_combo_counts_per_date_room, default=0),
+            "avg": round(
+                sum(staffing_combo_counts_per_date_room)
+                / len(staffing_combo_counts_per_date_room),
+                2,
+            ) if staffing_combo_counts_per_date_room else 0,
+            "max": max(staffing_combo_counts_per_date_room, default=0),
+        },
         candidateSeconds=round(preparation_seconds, 3),
         message=(
             f"Compact decision space prepared in {preparation_seconds:.1f}s: "
