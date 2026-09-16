@@ -131,6 +131,75 @@ function requireConfig(
   return value;
 }
 
+type CgroupMemorySnapshot = {
+  current: string | null;
+  max: string | null;
+  peak: string | null;
+  events: Record<string, number>;
+};
+
+async function readCgroupMemorySnapshot(): Promise<CgroupMemorySnapshot> {
+  async function readValue(filePath: string): Promise<string | null> {
+    try {
+      return (await readFile(filePath, "utf8")).trim();
+    } catch {
+      return null;
+    }
+  }
+
+  const [current, max, peak, eventsText] = await Promise.all([
+    readValue("/sys/fs/cgroup/memory.current"),
+    readValue("/sys/fs/cgroup/memory.max"),
+    readValue("/sys/fs/cgroup/memory.peak"),
+    readValue("/sys/fs/cgroup/memory.events"),
+  ]);
+
+  const events: Record<string, number> = {};
+
+  if (eventsText) {
+    for (const line of eventsText.split(/\r?\n/)) {
+      const [name, rawValue] = line.trim().split(/\s+/, 2);
+      const value = Number(rawValue);
+
+      if (name && Number.isFinite(value)) {
+        events[name] = value;
+      }
+    }
+  }
+
+  return {
+    current,
+    max,
+    peak,
+    events,
+  };
+}
+
+function cgroupMemoryDiagnostics(
+  before: CgroupMemorySnapshot,
+  after: CgroupMemorySnapshot,
+) {
+  const eventNames = new Set([
+    ...Object.keys(before.events),
+    ...Object.keys(after.events),
+  ]);
+
+  const eventDelta = Object.fromEntries(
+    [...eventNames]
+      .map((name) => [
+        name,
+        (after.events[name] ?? 0) - (before.events[name] ?? 0),
+      ])
+      .filter(([, delta]) => delta !== 0),
+  );
+
+  return {
+    before,
+    after,
+    eventDelta,
+  };
+}
+
 async function runCommand(
   command: string,
   args: string[],
@@ -139,6 +208,8 @@ async function runCommand(
     onStdoutLine?: (line: string) => void | Promise<void>;
   },
 ) {
+  const cgroupMemoryBefore = await readCgroupMemorySnapshot();
+
   return await new Promise<{
     stdout: string;
     stderr: string;
@@ -191,13 +262,28 @@ async function runCommand(
           return;
         }
 
+        let signalDiagnostics = "";
+
+        if (signal) {
+          const cgroupMemoryAfter = await readCgroupMemorySnapshot();
+          signalDiagnostics =
+            `\nCGROUP_MEMORY_DIAGNOSTICS ` +
+            JSON.stringify(
+              cgroupMemoryDiagnostics(
+                cgroupMemoryBefore,
+                cgroupMemoryAfter,
+              ),
+            );
+        }
+
         reject(
           new Error(
             `${command} ${args.join(" ")} failed with ` +
               (signal
                 ? `signal ${signal}`
                 : `exit code ${code}`) +
-              `.\n${stderr || stdout}`,
+              `.\n${stderr || stdout}` +
+              signalDiagnostics,
           ),
         );
       })().catch(reject);
