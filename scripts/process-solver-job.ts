@@ -682,176 +682,217 @@ async function processBasePlanJob(jobId: string) {
 
     const solverCompletedAt = new Date();
 
+    const preparedSessions = output.sessions.map((item) => {
+      const group = groupsById.get(
+        item.teaching_group_id,
+      );
+
+      if (!group) {
+        throw new Error(
+          `Solver returned unknown teaching group ${item.teaching_group_id}.`,
+        );
+      }
+
+      if (!item.date) {
+        throw new Error(
+          "Planning-horizon solver returned a session without a date.",
+        );
+      }
+
+      const assignments =
+        item.staffing_assignments &&
+        item.staffing_assignments.length > 0
+          ? item.staffing_assignments
+          : (
+              item.instructor_ids &&
+              item.instructor_ids.length > 0
+                ? item.instructor_ids
+                : [item.instructor_id]
+            ).map((instructorId, index) => ({
+              instructor_id: instructorId,
+              role:
+                index === 0
+                  ? StaffingRoleType.LEAD
+                  : StaffingRoleType.ASSISTANT,
+            }));
+
+      const uniqueAssignments = [
+        ...new Map(
+          assignments.map((assignment) => [
+            assignment.instructor_id,
+            assignment,
+          ]),
+        ).values(),
+      ];
+
+      return {
+        item,
+        group,
+        uniqueAssignments,
+      };
+    });
+
+    // A retried job must not duplicate partially persisted sessions.
+    // Keep this separate from the bulk inserts so no interactive
+    // transaction needs to remain open for the whole result set.
+    await prisma.scenarioSession.deleteMany({
+      where: {
+        tenantId: plan.tenantId,
+        planScenarioId: scenario.id,
+      },
+    });
+
+    const sessionChunkSize = 50;
+
+    for (
+      let offset = 0;
+      offset < preparedSessions.length;
+      offset += sessionChunkSize
+    ) {
+      const chunk = preparedSessions.slice(
+        offset,
+        offset + sessionChunkSize,
+      );
+
+      await prisma.$transaction(
+        async (tx) => {
+          for (const {
+            item,
+            group,
+            uniqueAssignments,
+          } of chunk) {
+            await tx.scenarioSession.create({
+              data: {
+                tenantId: plan.tenantId,
+                planScenarioId: scenario.id,
+                teachingGroupId:
+                  item.teaching_group_id,
+                roomId: item.room_id,
+                date: dateValue(item.date!),
+                startMinute: item.start_minute,
+                endMinute: item.end_minute,
+                origin: "GENERATED",
+                instructors: {
+                  create: uniqueAssignments.map(
+                    (assignment) => ({
+                      tenantId: plan.tenantId,
+                      instructorId:
+                        assignment.instructor_id,
+                      role: staffingRole(
+                        assignment.role,
+                      ),
+                    }),
+                  ),
+                },
+                students: {
+                  create: group.students.map(
+                    (student) => ({
+                      tenantId: plan.tenantId,
+                      studentId: student.studentId,
+                    }),
+                  ),
+                },
+              },
+            });
+          }
+        },
+        {
+          maxWait: 10_000,
+          timeout: 120_000,
+        },
+      );
+    }
+
     await prisma.$transaction(
       async (tx) => {
-      // A retried job must not duplicate partially persisted scenario sessions.
-      await tx.scenarioSession.deleteMany({
-        where: {
-          tenantId: plan.tenantId,
-          planScenarioId: scenario.id,
-        },
-      });
-
-      for (const item of output.sessions) {
-        const group = groupsById.get(
-          item.teaching_group_id,
-        );
-
-        if (!group) {
-          throw new Error(
-            `Solver returned unknown teaching group ${item.teaching_group_id}.`,
-          );
-        }
-
-        if (!item.date) {
-          throw new Error(
-            "Planning-horizon solver returned a session without a date.",
-          );
-        }
-
-        const assignments =
-          item.staffing_assignments &&
-          item.staffing_assignments.length > 0
-            ? item.staffing_assignments
-            : (
-                item.instructor_ids &&
-                item.instructor_ids.length > 0
-                  ? item.instructor_ids
-                  : [item.instructor_id]
-              ).map((instructorId, index) => ({
-                instructor_id: instructorId,
-                role:
-                  index === 0
-                    ? StaffingRoleType.LEAD
-                    : StaffingRoleType.ASSISTANT,
-              }));
-
-        const uniqueAssignments = [
-          ...new Map(
-            assignments.map((assignment) => [
-              assignment.instructor_id,
-              assignment,
-            ]),
-          ).values(),
-        ];
-
-        await tx.scenarioSession.create({
-          data: {
-            tenantId: plan.tenantId,
-            planScenarioId: scenario.id,
-            teachingGroupId: item.teaching_group_id,
-            roomId: item.room_id,
-            date: dateValue(item.date),
-            startMinute: item.start_minute,
-            endMinute: item.end_minute,
-            origin: "GENERATED",
-            instructors: {
-              create: uniqueAssignments.map(
-                (assignment) => ({
-                  tenantId: plan.tenantId,
-                  instructorId:
-                    assignment.instructor_id,
-                  role: staffingRole(
-                    assignment.role,
-                  ),
-                }),
-              ),
+        const afterScenario =
+          await tx.planScenario.update({
+            where: {
+              id: scenario.id,
             },
-            students: {
-              create: group.students.map(
-                (student) => ({
-                  tenantId: plan.tenantId,
-                  studentId: student.studentId,
-                }),
-              ),
+            data: {
+              status: ScenarioStatus.GENERATED,
+              solverScore: output.objective_value,
+              objectiveSummary: {
+                solverStatus: output.status,
+                schemaVersion: output.schema_version,
+                metrics: output.metrics ?? [],
+                diagnostics: JSON.parse(
+                  JSON.stringify(
+                    output.diagnostics ?? {},
+                  ),
+                ) as Prisma.InputJsonValue,
+                inputFingerprint,
+              } satisfies Prisma.InputJsonValue,
+              generatedAt: solverCompletedAt,
+              failureMessage: null,
+            },
+          });
+
+        await tx.plan.update({
+          where: {
+            id: plan.id,
+          },
+          data: {
+            status: PlanStatus.GENERATED,
+          },
+        });
+
+        await ensureReviewWorkflow(tx, {
+          id: plan.id,
+          tenantId: plan.tenantId,
+          planningScopeId: plan.planningScopeId,
+          version: plan.version,
+        });
+
+        await tx.solverRun.update({
+          where: {
+            id: run.id,
+          },
+          data: {
+            status: finalRunStatus,
+            objectiveValue: output.objective_value,
+            completedAt: solverCompletedAt,
+            wallTimeSeconds:
+              (solverCompletedAt.getTime() -
+                startedAt.getTime()) /
+              1000,
+            diagnostics: {
+              jobType: "BASE_PLAN",
+              planId: plan.id,
+              planVersion: plan.version,
+              scenarioId: scenario.id,
+              sessionCount: output.sessions.length,
+              solverStatus: output.status,
+              buildOutput: tail(buildStdout),
+              solverOutput: tail(solverStdout),
             },
           },
         });
-      }
 
-      const afterScenario = await tx.planScenario.update({
-        where: {
-          id: scenario.id,
-        },
-        data: {
-          status: ScenarioStatus.GENERATED,
-          solverScore: output.objective_value,
-          objectiveSummary: {
-            solverStatus: output.status,
-            schemaVersion: output.schema_version,
-            metrics: output.metrics ?? [],
-            diagnostics: JSON.parse(
-              JSON.stringify(output.diagnostics ?? {}),
-            ) as Prisma.InputJsonValue,
-            inputFingerprint,
-          } satisfies Prisma.InputJsonValue,
-          generatedAt: solverCompletedAt,
-          failureMessage: null,
-        },
-      });
-
-      await tx.plan.update({
-        where: {
-          id: plan.id,
-        },
-        data: {
-          status: PlanStatus.GENERATED,
-        },
-      });
-
-      await ensureReviewWorkflow(tx, {
-        id: plan.id,
-        tenantId: plan.tenantId,
-        planningScopeId: plan.planningScopeId,
-        version: plan.version,
-      });
-
-      await tx.solverRun.update({
-        where: {
-          id: run.id,
-        },
-        data: {
-          status: finalRunStatus,
-          objectiveValue: output.objective_value,
-          completedAt: solverCompletedAt,
-          wallTimeSeconds:
-            (solverCompletedAt.getTime() - startedAt.getTime()) / 1000,
-          diagnostics: {
-            jobType: "BASE_PLAN",
-            planId: plan.id,
-            planVersion: plan.version,
-            scenarioId: scenario.id,
-            sessionCount: output.sessions.length,
-            solverStatus: output.status,
-            buildOutput: tail(buildStdout),
-            solverOutput: tail(solverStdout),
+        await writeAuditEvent(tx, {
+          tenantId: plan.tenantId,
+          eventType: "GENERATED",
+          entityType: "PlanScenario",
+          entityId: scenario.id,
+          description:
+            `Base Plan proposal generated for v${plan.version}: ` +
+            `${output.sessions.length} session(s), solver ${output.status}.`,
+          source: "planning.base-plan.worker",
+          correlationId,
+          planId: plan.id,
+          scenarioId: scenario.id,
+          beforeState: {
+            status: ScenarioStatus.GENERATING,
           },
-        },
-      });
-
-      await writeAuditEvent(tx, {
-        tenantId: plan.tenantId,
-        eventType: "GENERATED",
-        entityType: "PlanScenario",
-        entityId: scenario.id,
-        description:
-          `Base Plan proposal generated for v${plan.version}: ` +
-          `${output.sessions.length} session(s), solver ${output.status}.`,
-        source: "planning.base-plan.worker",
-        correlationId,
-        planId: plan.id,
-        scenarioId: scenario.id,
-        beforeState: {
-          status: ScenarioStatus.GENERATING,
-        },
-        afterState: {
-          status: afterScenario.status,
-          solverStatus: output.status,
-          solverScore: output.objective_value,
-          sessionCount: output.sessions.length,
-          inputFingerprint,
-        },
-      });
+          afterState: {
+            status: afterScenario.status,
+            solverStatus: output.status,
+            solverScore: output.objective_value,
+            sessionCount: output.sessions.length,
+            inputFingerprint,
+          },
+        });
       },
       {
         maxWait: 10_000,
