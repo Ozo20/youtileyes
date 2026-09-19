@@ -389,7 +389,7 @@ async function cancellationRequested(
 
   return (
     state?.status === SolverJobStatus.CANCELLED ||
-    state?.cancelRequestedAt !== null
+    state?.cancelRequestedAt != null
   );
 }
 
@@ -576,6 +576,7 @@ async function processBasePlanJob(jobId: string) {
         id: job.id,
       },
       data: {
+        heartbeatAt: new Date(),
         config: JSON.parse(
           JSON.stringify(currentConfig),
         ) as Prisma.InputJsonValue,
@@ -592,6 +593,7 @@ async function processBasePlanJob(jobId: string) {
       data: {
         status: SolverJobStatus.RUNNING,
         startedAt,
+        heartbeatAt: startedAt,
         failureMessage: null,
       },
     });
@@ -1332,6 +1334,7 @@ async function processJob(jobId: string) {
       data: {
         status: SolverJobStatus.RUNNING,
         startedAt,
+        heartbeatAt: startedAt,
         failureMessage: null,
       },
     });

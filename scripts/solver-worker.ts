@@ -19,12 +19,30 @@ const errorBackoffMs = positiveInteger(
   process.env.SOLVER_WORKER_ERROR_BACKOFF_MS,
   10_000,
 );
+const heartbeatIntervalMs = positiveInteger(
+  process.env.SOLVER_WORKER_HEARTBEAT_INTERVAL_MS,
+  30_000,
+);
+
+const staleHeartbeatMs = positiveInteger(
+  process.env.SOLVER_WORKER_STALE_HEARTBEAT_MS,
+  15 * 60_000,
+);
+
+const staleCheckIntervalMs = positiveInteger(
+  process.env.SOLVER_WORKER_STALE_CHECK_INTERVAL_MS,
+  60_000,
+);
+
 const workerName =
   process.env.SOLVER_WORKER_NAME ??
   process.env.RAILWAY_REPLICA_ID ??
   `worker-${process.pid}`;
 
+const recoverStaleOnly = process.argv.includes("--recover-stale-only");
+
 let stopRequested = false;
+let lastStaleCheckAt = 0;
 
 function requestShutdown(signal: NodeJS.Signals) {
   if (stopRequested) return;
@@ -50,6 +68,151 @@ type QueuedSolverJob = {
   config: unknown;
 };
 
+const staleJobUserMessage =
+  "The timetable process stopped unexpectedly before it finished. " +
+  "No published plan was changed. You can start the generation again.";
+
+async function recoverStaleJobs(): Promise<void> {
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - staleHeartbeatMs);
+
+  const staleJobs = await prisma.solverJob.findMany({
+    where: {
+      status: "RUNNING",
+      OR: [
+        {
+          heartbeatAt: {
+            lt: staleBefore,
+          },
+        },
+        {
+          heartbeatAt: null,
+          startedAt: {
+            lt: staleBefore,
+          },
+        },
+      ],
+    },
+    select: {
+      id: true,
+      tenantId: true,
+      planScenarioId: true,
+      recoveryCaseId: true,
+      config: true,
+      heartbeatAt: true,
+      startedAt: true,
+      runs: {
+        where: {
+          status: "STARTED",
+        },
+        select: {
+          id: true,
+          diagnostics: true,
+        },
+      },
+    },
+  });
+
+  for (const job of staleJobs) {
+    const type = solverJobType(job.config);
+
+    const recovered = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.solverJob.updateMany({
+        where: {
+          id: job.id,
+          status: "RUNNING",
+          OR: [
+            {
+              heartbeatAt: {
+                lt: staleBefore,
+              },
+            },
+            {
+              heartbeatAt: null,
+              startedAt: {
+                lt: staleBefore,
+              },
+            },
+          ],
+        },
+        data: {
+          status: "FAILED",
+          completedAt: now,
+          failureMessage: staleJobUserMessage,
+        },
+      });
+
+      if (claimed.count !== 1) {
+        return false;
+      }
+
+      for (const run of job.runs) {
+        const diagnostics =
+          run.diagnostics &&
+          typeof run.diagnostics === "object" &&
+          !Array.isArray(run.diagnostics)
+            ? run.diagnostics
+            : {};
+
+        await tx.solverRun.update({
+          where: {
+            id: run.id,
+          },
+          data: {
+            status: "FAILED",
+            completedAt: now,
+            diagnostics: {
+              ...diagnostics,
+              reasonCode: "STALE_HEARTBEAT",
+              interruptionType: "WORKER_HEARTBEAT_TIMEOUT",
+              heartbeatAt:
+                job.heartbeatAt?.toISOString() ?? null,
+              recoveredAt: now.toISOString(),
+            },
+          },
+        });
+      }
+
+      if (type === "BASE_PLAN") {
+        await tx.planScenario.updateMany({
+          where: {
+            id: job.planScenarioId,
+            status: "GENERATING",
+          },
+          data: {
+            status: "FAILED",
+            failureMessage: staleJobUserMessage,
+            generatedAt: now,
+          },
+        });
+      }
+
+      if (type === "RECOVERY_CASE" && job.recoveryCaseId) {
+        await tx.recoveryCase.updateMany({
+          where: {
+            id: job.recoveryCaseId,
+          },
+          data: {
+            status: "OPEN",
+          },
+        });
+      }
+
+      return true;
+    });
+
+    if (!recovered) {
+      continue;
+    }
+
+    console.warn(
+      `[solver-worker] Recovered stale SolverJob ${job.id} ` +
+        `(${type ?? "unknown"}); last heartbeat ` +
+        `${job.heartbeatAt?.toISOString() ?? "missing"}.`,
+    );
+  }
+}
+
 async function findNextQueuedJob(): Promise<QueuedSolverJob | null> {
   return prisma.solverJob.findFirst({
     where: { status: "QUEUED" },
@@ -69,6 +232,42 @@ function solverJobType(config: unknown): string | null {
 
   const type = (config as Record<string, unknown>).type;
   return typeof type === "string" ? type : null;
+}
+
+function startJobHeartbeat(jobId: string): () => void {
+  let heartbeatInFlight = false;
+
+  const timer = setInterval(() => {
+    if (heartbeatInFlight) return;
+
+    heartbeatInFlight = true;
+
+    void prisma.solverJob
+      .updateMany({
+        where: {
+          id: jobId,
+          status: "RUNNING",
+        },
+        data: {
+          heartbeatAt: new Date(),
+        },
+      })
+      .catch((error) => {
+        console.error(
+          `[solver-worker] Could not update heartbeat for SolverJob ${jobId}.`,
+          error,
+        );
+      })
+      .finally(() => {
+        heartbeatInFlight = false;
+      });
+  }, heartbeatIntervalMs);
+
+  timer.unref();
+
+  return () => {
+    clearInterval(timer);
+  };
 }
 
 async function processSolverJob(job: QueuedSolverJob): Promise<void> {
@@ -106,6 +305,9 @@ async function processSolverJob(job: QueuedSolverJob): Promise<void> {
 
   const executable = process.platform === "win32" ? "npx.cmd" : "npx";
 
+  const stopHeartbeat = startJobHeartbeat(job.id);
+
+  try {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, ["tsx", processor, "--job", job.id], {
       cwd: process.cwd(),
@@ -129,6 +331,9 @@ async function processSolverJob(job: QueuedSolverJob): Promise<void> {
       );
     });
   });
+  } finally {
+    stopHeartbeat();
+  }
 }
 
 async function main(): Promise<void> {
@@ -136,8 +341,21 @@ async function main(): Promise<void> {
     `[solver-worker] ${workerName} started; polling every ${pollIntervalMs} ms.`,
   );
 
+  if (recoverStaleOnly) {
+    await recoverStaleJobs();
+    console.log("[solver-worker] Stale-job recovery completed.");
+    return;
+  }
+
   while (!stopRequested) {
     try {
+      const now = Date.now();
+
+      if (now - lastStaleCheckAt >= staleCheckIntervalMs) {
+        await recoverStaleJobs();
+        lastStaleCheckAt = now;
+      }
+
       const job = await findNextQueuedJob();
 
       if (!job) {

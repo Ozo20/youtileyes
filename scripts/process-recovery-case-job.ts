@@ -158,6 +158,7 @@ async function main() {
       data: {
         status: SolverJobStatus.RUNNING,
         startedAt,
+        heartbeatAt: startedAt,
         failureMessage: null,
       },
     });
