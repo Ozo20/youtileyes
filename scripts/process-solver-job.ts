@@ -17,6 +17,13 @@ import {
 import { writeAuditEvent } from "../src/lib/audit";
 import { prisma } from "../src/lib/prisma";
 
+class SolverJobCancelledError extends Error {
+  constructor(message = "Solver job cancelled by user.") {
+    super(message);
+    this.name = "SolverJobCancelledError";
+  }
+}
+
 type JobProgress = {
   phase?: string;
   phaseLabel?: string;
@@ -206,6 +213,7 @@ async function runCommand(
   options?: {
     env?: NodeJS.ProcessEnv;
     onStdoutLine?: (line: string) => void | Promise<void>;
+    shouldCancel?: () => boolean | Promise<boolean>;
   },
 ) {
   const cgroupMemoryBefore = await readCgroupMemorySnapshot();
@@ -224,6 +232,59 @@ async function runCommand(
     let stderr = "";
     let stdoutBuffer = "";
     let lineWork = Promise.resolve();
+    let cancellationRequested = false;
+    let cancellationCheckInFlight = false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+
+    const cancellationTimer = options?.shouldCancel
+      ? setInterval(() => {
+          if (cancellationRequested || cancellationCheckInFlight) return;
+
+          cancellationCheckInFlight = true;
+
+          void Promise.resolve(options.shouldCancel?.())
+            .then((shouldCancel) => {
+              if (!shouldCancel || cancellationRequested) return;
+
+              cancellationRequested = true;
+
+              console.log(
+                `[solver-worker] Cancellation requested; sending SIGTERM to ${command}.`,
+              );
+
+              child.kill("SIGTERM");
+
+              forceKillTimer = setTimeout(() => {
+                if (child.exitCode === null && child.signalCode === null) {
+                  console.warn(
+                    `[solver-worker] ${command} did not stop after SIGTERM; sending SIGKILL.`,
+                  );
+                  child.kill("SIGKILL");
+                }
+              }, 5_000);
+            })
+            .catch((error) => {
+              console.error(
+                "[solver-worker] Could not check solver cancellation state.",
+                error,
+              );
+            })
+            .finally(() => {
+              cancellationCheckInFlight = false;
+            });
+        }, 5_000)
+      : null;
+
+    const clearCancellationTimers = () => {
+      if (cancellationTimer) {
+        clearInterval(cancellationTimer);
+      }
+
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+    };
 
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString();
@@ -246,15 +307,29 @@ async function runCommand(
       stderr += chunk.toString();
     });
 
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearCancellationTimers();
+      reject(error);
+    });
 
     child.on("close", (code, signal) => {
+      clearCancellationTimers();
+
       void (async () => {
         if (options?.onStdoutLine && stdoutBuffer) {
           await lineWork;
           await options.onStdoutLine(stdoutBuffer);
         } else {
           await lineWork;
+        }
+
+        if (cancellationRequested) {
+          reject(
+            new SolverJobCancelledError(
+              "Solver job cancelled by user while optimization was running.",
+            ),
+          );
+          return;
         }
 
         if (code === 0) {
@@ -297,6 +372,33 @@ function runStatus(value: string): SolverRunStatus {
   if (value === "INFEASIBLE") return SolverRunStatus.INFEASIBLE;
   if (value === "UNKNOWN") return SolverRunStatus.UNKNOWN;
   return SolverRunStatus.FAILED;
+}
+
+async function cancellationRequested(
+  jobId: string,
+): Promise<boolean> {
+  const state = await prisma.solverJob.findUnique({
+    where: {
+      id: jobId,
+    },
+    select: {
+      status: true,
+      cancelRequestedAt: true,
+    },
+  });
+
+  return (
+    state?.status === SolverJobStatus.CANCELLED ||
+    state?.cancelRequestedAt !== null
+  );
+}
+
+async function throwIfCancellationRequested(
+  jobId: string,
+): Promise<void> {
+  if (await cancellationRequested(jobId)) {
+    throw new SolverJobCancelledError();
+  }
 }
 
 function tail(value: string, length = 6000) {
@@ -566,9 +668,14 @@ async function processBasePlanJob(jobId: string) {
         "--output",
         inputPath,
       ],
+      {
+        shouldCancel: () => cancellationRequested(job.id),
+      },
     );
 
     buildStdout = buildResult.stdout;
+
+    await throwIfCancellationRequested(job.id);
 
     await updateProgress({
       phase: "SOLVING",
@@ -594,6 +701,7 @@ async function processBasePlanJob(jobId: string) {
         "--progress",
       ],
       {
+        shouldCancel: () => cancellationRequested(job.id),
         onStdoutLine: async (line) => {
           const prefix = "YOUTILEYES_PROGRESS ";
 
@@ -616,6 +724,8 @@ async function processBasePlanJob(jobId: string) {
     );
 
     solverStdout = solverResult.stdout;
+
+    await throwIfCancellationRequested(job.id);
 
     const output = JSON.parse(
       await readFile(outputPath, "utf8"),
@@ -643,6 +753,8 @@ async function processBasePlanJob(jobId: string) {
         `Base Plan solver finished with ${output.status}.`,
       );
     }
+
+    await throwIfCancellationRequested(job.id);
 
     await updateProgress({
       phase: "PERSISTING",
@@ -735,6 +847,8 @@ async function processBasePlanJob(jobId: string) {
     // A retried job must not duplicate partially persisted sessions.
     // Keep this separate from the bulk inserts so no interactive
     // transaction needs to remain open for the whole result set.
+    await throwIfCancellationRequested(job.id);
+
     await prisma.scenarioSession.deleteMany({
       where: {
         tenantId: plan.tenantId,
@@ -749,6 +863,8 @@ async function processBasePlanJob(jobId: string) {
       offset < preparedSessions.length;
       offset += sessionChunkSize
     ) {
+      await throwIfCancellationRequested(job.id);
+
       const chunk = preparedSessions.slice(
         offset,
         offset + sessionChunkSize,
@@ -802,6 +918,8 @@ async function processBasePlanJob(jobId: string) {
         },
       );
     }
+
+    await throwIfCancellationRequested(job.id);
 
     await prisma.$transaction(
       async (tx) => {
@@ -953,6 +1071,102 @@ async function processBasePlanJob(jobId: string) {
       error instanceof Error
         ? error.message
         : String(error);
+
+    if (error instanceof SolverJobCancelledError) {
+      // Persistence is chunked, so cancellation may happen after some
+      // ScenarioSession rows have already been written. Remove them before
+      // marking the proposal as cancelled.
+      await prisma.scenarioSession.deleteMany({
+        where: {
+          tenantId: plan.tenantId,
+          planScenarioId: scenario.id,
+        },
+      });
+
+      try {
+        await updateProgress({
+          phase: "CANCELLED",
+          phaseLabel: "Cancelled",
+          message: message.slice(0, 1000),
+        });
+      } catch (progressError) {
+        console.error(
+          "Could not persist cancellation progress.",
+          progressError,
+        );
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.solverRun.update({
+          where: {
+            id: run.id,
+          },
+          data: {
+            status: SolverRunStatus.CANCELLED,
+            completedAt,
+            wallTimeSeconds:
+              (completedAt.getTime() - startedAt.getTime()) / 1000,
+            diagnostics: {
+              jobType: "BASE_PLAN",
+              planId: plan.id,
+              planVersion: plan.version,
+              scenarioId: scenario.id,
+              cancellation: true,
+              message,
+              buildOutput: tail(buildStdout),
+              solverOutput: tail(solverStdout),
+            },
+          },
+        });
+
+        await tx.planScenario.update({
+          where: {
+            id: scenario.id,
+          },
+          data: {
+            status: ScenarioStatus.CANCELLED,
+            failureMessage: null,
+            generatedAt: completedAt,
+          },
+        });
+
+        await tx.solverJob.update({
+          where: {
+            id: job.id,
+          },
+          data: {
+            status: SolverJobStatus.CANCELLED,
+            completedAt,
+            failureMessage: null,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          tenantId: plan.tenantId,
+          eventType: "UPDATED",
+          entityType: "SolverJob",
+          entityId: job.id,
+          description:
+            `Base Plan solver job cancelled for v${plan.version}.`,
+          source: "planning.base-plan.worker",
+          correlationId,
+          planId: plan.id,
+          scenarioId: scenario.id,
+          beforeState: {
+            status: SolverJobStatus.RUNNING,
+          },
+          afterState: {
+            status: SolverJobStatus.CANCELLED,
+          },
+        });
+      });
+
+      console.log(
+        `Base Plan SolverJob ${job.id} cancelled for scenario ${scenario.id}.`,
+      );
+
+      return;
+    }
 
     try {
       await updateProgress({

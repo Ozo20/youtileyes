@@ -373,3 +373,162 @@ export async function generateBasePlanScenario(
     `/planning?scenario=${scenario.id}&job=${job.id}#base-plan-generation`,
   );
 }
+
+export async function cancelBasePlanSolverJob(
+  formData: FormData,
+) {
+  const jobId = requiredText(formData, "jobId");
+  const now = new Date();
+
+  const job = await prisma.solverJob.findUnique({
+    where: {
+      id: jobId,
+    },
+    include: {
+      planScenario: {
+        include: {
+          plan: true,
+        },
+      },
+      runs: {
+        where: {
+          status: "STARTED",
+        },
+        orderBy: {
+          startedAt: "desc",
+        },
+        take: 1,
+      },
+    },
+  });
+
+  if (!job) {
+    throw new Error("Solver job not found.");
+  }
+
+  const config =
+    job.config &&
+    typeof job.config === "object" &&
+    !Array.isArray(job.config)
+      ? { ...(job.config as Record<string, unknown>) }
+      : {};
+
+  const correlationId =
+    typeof config.correlationId === "string"
+      ? config.correlationId
+      : randomUUID();
+
+  if (job.status === SolverJobStatus.QUEUED) {
+    await prisma.$transaction(async (tx) => {
+      const cancelled = await tx.solverJob.updateMany({
+        where: {
+          id: job.id,
+          status: SolverJobStatus.QUEUED,
+        },
+        data: {
+          status: SolverJobStatus.CANCELLED,
+          completedAt: now,
+          cancelRequestedAt: now,
+          failureMessage: null,
+          config: {
+            ...config,
+            progress: {
+              phase: "CANCELLED",
+              phaseLabel: "Cancelled",
+              percent: 0,
+              currentWeek: 0,
+              totalWeeks: null,
+              message: "Generation cancelled before solver execution started.",
+              updatedAt: now.toISOString(),
+            },
+          } satisfies Prisma.InputJsonValue,
+        },
+      });
+
+      if (cancelled.count !== 1) {
+        throw new Error(
+          "Solver job changed state before cancellation could be applied.",
+        );
+      }
+
+      await tx.planScenario.update({
+        where: {
+          id: job.planScenarioId,
+        },
+        data: {
+          status: ScenarioStatus.CANCELLED,
+          generatedAt: now,
+          failureMessage: null,
+        },
+      });
+
+      await writeAuditEvent(tx, {
+        tenantId: job.tenantId,
+        eventType: "UPDATED",
+        entityType: "SolverJob",
+        entityId: job.id,
+        actor: DEMO_ACTOR,
+        description:
+          `Base Plan solver job cancelled before execution for v${job.planScenario.plan.version}.`,
+        source: "planning.base-plan.cancel",
+        correlationId,
+        planId: job.planScenario.planId,
+        scenarioId: job.planScenarioId,
+        beforeState: {
+          status: SolverJobStatus.QUEUED,
+        },
+        afterState: {
+          status: SolverJobStatus.CANCELLED,
+        },
+      });
+    });
+  } else if (job.status === SolverJobStatus.RUNNING) {
+    const requested = await prisma.solverJob.updateMany({
+      where: {
+        id: job.id,
+        status: SolverJobStatus.RUNNING,
+        cancelRequestedAt: null,
+      },
+      data: {
+        cancelRequestedAt: now,
+      },
+    });
+
+    if (requested.count !== 1 && !job.cancelRequestedAt) {
+      throw new Error(
+        "Solver job changed state before cancellation could be requested.",
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await writeAuditEvent(tx, {
+        tenantId: job.tenantId,
+        eventType: "UPDATED",
+        entityType: "SolverJob",
+        entityId: job.id,
+        actor: DEMO_ACTOR,
+        description:
+          `Cancellation requested for Base Plan solver job v${job.planScenario.plan.version}.`,
+        source: "planning.base-plan.cancel",
+        correlationId,
+        planId: job.planScenario.planId,
+        scenarioId: job.planScenarioId,
+        beforeState: {
+          status: SolverJobStatus.RUNNING,
+        },
+        afterState: {
+          status: SolverJobStatus.RUNNING,
+          cancelRequestedAt: now.toISOString(),
+        },
+      });
+    });
+  }
+
+  revalidatePath("/planning");
+  revalidatePath("/planning/base-plan");
+  revalidatePath("/history");
+
+  redirect(
+    `/planning?scenario=${job.planScenarioId}&job=${job.id}#base-plan-generation`,
+  );
+}

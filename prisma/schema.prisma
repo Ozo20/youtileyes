@@ -1364,6 +1364,7 @@ enum ScenarioStatus {
   GENERATING
   GENERATED
   FAILED
+  CANCELLED
   ACCEPTED
   REJECTED
 }
@@ -1666,6 +1667,7 @@ enum SolverRunStatus {
   INFEASIBLE
   UNKNOWN
   FAILED
+  CANCELLED
 }
 
 enum ConstraintViolationSeverity {
@@ -1710,9 +1712,10 @@ model SolverJob {
   priority       Int             @default(100)
   config         Json?
   queuedAt       DateTime        @default(now())
-  startedAt      DateTime?
-  completedAt    DateTime?
-  failureMessage String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  cancelRequestedAt DateTime?
+  failureMessage    String?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 

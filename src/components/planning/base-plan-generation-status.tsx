@@ -7,6 +7,9 @@ import {
 
 import { SolverJobAutoRefresh } from "@/components/planning/solver-job-auto-refresh";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { LocalTime } from "@/components/ui/local-time";
+import { cancelBasePlanSolverJob } from "@/lib/planning/base-plan-solver-actions";
 
 type Job = {
   id: string;
@@ -14,6 +17,7 @@ type Job = {
   queuedAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
+  cancelRequestedAt: Date | null;
   failureMessage: string | null;
   config: unknown;
   planScenario: {
@@ -81,16 +85,6 @@ function tone(status: string) {
   return "info" as const;
 }
 
-function timeLabel(value: Date | null) {
-  if (!value) return null;
-
-  return new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(value);
-}
-
 export function BasePlanGenerationStatus({
   job,
 }: {
@@ -100,12 +94,16 @@ export function BasePlanGenerationStatus({
 
   const active =
     job.status === "QUEUED" || job.status === "RUNNING";
+
+  const cancelling =
+    job.status === "RUNNING" &&
+    job.cancelRequestedAt !== null;
   const progress = progressFromConfig(job.config);
   const percent = Math.max(
     0,
     Math.min(100, Math.round(progress.percent ?? 0)),
   );
-  const started = timeLabel(job.startedAt ?? job.queuedAt);
+  const startedAt = job.startedAt ?? job.queuedAt;
 
   const weekLabel =
     progress.currentWeek && progress.totalWeeks
@@ -149,7 +147,8 @@ export function BasePlanGenerationStatus({
           <span>
             {progress.phaseLabel ?? progress.phase ?? job.status}
             {weekLabel ? ` · ${weekLabel}` : ""}
-            {started ? ` · started ${started}` : ""}
+            {" · started "}
+            <LocalTime value={startedAt.toISOString()} />
           </span>
         </div>
 
@@ -177,9 +176,23 @@ export function BasePlanGenerationStatus({
               </small>
             ) : null}
             <small>
-              Generation continues in the background. You can leave this
-              page and return later.
+              {cancelling
+                ? "Cancellation requested. The running solver process is being stopped safely."
+                : "Generation continues in the background. You can leave this page and return later."}
             </small>
+
+            {active && !cancelling ? (
+              <form action={cancelBasePlanSolverJob}>
+                <input
+                  type="hidden"
+                  name="jobId"
+                  value={job.id}
+                />
+                <Button type="submit">
+                  Cancel generation
+                </Button>
+              </form>
+            ) : null}
           </>
         ) : null}
 
