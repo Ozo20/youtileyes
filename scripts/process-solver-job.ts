@@ -39,6 +39,10 @@ type JobProgress = {
   instructorTravelConstraints?: number;
   studentBreakConstraints?: number;
   updatedAt?: string;
+  weekStartedAt?: string;
+  recentWeekDurationsSeconds?: number[];
+  estimatedRemainingSeconds?: number | null;
+  estimatedCompletionAt?: string | null;
 };
 
 type RecoveryJobConfig = {
@@ -425,6 +429,130 @@ function staffingRole(value: string): StaffingRoleType {
   return StaffingRoleType.OTHER;
 }
 
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 1) {
+    return sorted[middle] ?? null;
+  }
+
+  const left = sorted[middle - 1];
+  const right = sorted[middle];
+
+  if (left === undefined || right === undefined) {
+    return null;
+  }
+
+  return (left + right) / 2;
+}
+
+function etaProgress(
+  previous: JobProgress,
+  patch: JobProgress,
+  now: Date,
+): Partial<JobProgress> {
+  if (patch.phase === "PERSISTING") {
+    return {
+      estimatedRemainingSeconds: null,
+      estimatedCompletionAt: null,
+    };
+  }
+
+  const currentWeek =
+    patch.currentWeek ?? previous.currentWeek ?? null;
+  const totalWeeks =
+    patch.totalWeeks ?? previous.totalWeeks ?? null;
+
+  if (!currentWeek || !totalWeeks) {
+    return {};
+  }
+
+  let weekStartedAt = previous.weekStartedAt;
+  let durations = [
+    ...(previous.recentWeekDurationsSeconds ?? []),
+  ];
+
+  const previousWeek = previous.currentWeek ?? null;
+
+  if (
+    previousWeek !== null &&
+    currentWeek > previousWeek &&
+    previous.weekStartedAt
+  ) {
+    const startedAtMs = Date.parse(previous.weekStartedAt);
+
+    if (Number.isFinite(startedAtMs)) {
+      const durationSeconds = Math.max(
+        1,
+        Math.round((now.getTime() - startedAtMs) / 1000),
+      );
+
+      durations = [...durations, durationSeconds].slice(-5);
+    }
+
+    weekStartedAt = now.toISOString();
+  } else if (!weekStartedAt) {
+    weekStartedAt = now.toISOString();
+  }
+
+  if (durations.length < 2) {
+    return {
+      weekStartedAt,
+      recentWeekDurationsSeconds: durations,
+      estimatedRemainingSeconds: null,
+      estimatedCompletionAt: null,
+    };
+  }
+
+  const typicalWeekSeconds = median(durations);
+
+  if (typicalWeekSeconds === null) {
+    return {
+      weekStartedAt,
+      recentWeekDurationsSeconds: durations,
+    };
+  }
+
+  const currentWeekStartedMs = Date.parse(weekStartedAt);
+  const currentWeekElapsedSeconds = Number.isFinite(
+    currentWeekStartedMs,
+  )
+    ? Math.max(
+        0,
+        Math.round(
+          (now.getTime() - currentWeekStartedMs) / 1000,
+        ),
+      )
+    : 0;
+
+  const currentWeekRemainingSeconds = Math.max(
+    0,
+    typicalWeekSeconds - currentWeekElapsedSeconds,
+  );
+
+  const fullWeeksRemaining = Math.max(
+    0,
+    totalWeeks - currentWeek,
+  );
+
+  const estimatedRemainingSeconds = Math.round(
+    currentWeekRemainingSeconds +
+      fullWeeksRemaining * typicalWeekSeconds,
+  );
+
+  return {
+    weekStartedAt,
+    recentWeekDurationsSeconds: durations,
+    estimatedRemainingSeconds,
+    estimatedCompletionAt: new Date(
+      now.getTime() + estimatedRemainingSeconds * 1000,
+    ).toISOString(),
+  };
+}
+
 function progressRecord(value: unknown): JobProgress {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -560,10 +688,14 @@ async function processBasePlanJob(jobId: string) {
     patch: JobProgress,
   ) => {
     const previous = progressRecord(currentConfig.progress);
+    const now = new Date();
+    const eta = etaProgress(previous, patch, now);
+
     const progress: JobProgress = {
       ...previous,
       ...patch,
-      updatedAt: new Date().toISOString(),
+      ...eta,
+      updatedAt: now.toISOString(),
     };
 
     currentConfig = {
