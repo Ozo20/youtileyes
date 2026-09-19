@@ -27,6 +27,7 @@ import {
   removeRecoveryDisruption,
   updateRecoveryDisruption,
 } from "@/lib/planning/recovery-case-actions";
+import { recoveryCaseStatusLabel } from "@/lib/planning/status-labels";
 
 type Resource = {
   id: string;
@@ -200,8 +201,10 @@ export function RecoveryCasePanel({
             {activeJob
               ? "Recalculating"
               : currentFailure
-                ? "FAILED"
-                : recoveryCase?.status ?? "NEW"}
+                ? "Could not complete"
+                : recoveryCase
+                  ? recoveryCaseStatusLabel(recoveryCase.status)
+                  : "Not started"}
           </Badge>
         </div>
       </CardHeader>

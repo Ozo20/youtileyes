@@ -15,12 +15,19 @@ import {
 } from "@/components/masterdata/form-field";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { LocalTime } from "@/components/ui/local-time";
 import {
   Card,
   CardContent,
   CardHeader,
 } from "@/components/ui/card";
 import { queueResourceRecoveryJob } from "@/lib/planning/solver-job-actions";
+import {
+  scenarioStatusLabel,
+  solverJobStatusLabel,
+  solverJobStatusTone,
+  solverRunOutcomeLabel,
+} from "@/lib/planning/status-labels";
 
 type BaseScenario = {
   id: string;
@@ -59,14 +66,6 @@ type Job = {
   }>;
 };
 
-function tone(status: string) {
-  if (status === "SUCCEEDED") return "success" as const;
-  if (status === "FAILED" || status === "CANCELLED") {
-    return "danger" as const;
-  }
-  if (status === "RUNNING") return "warning" as const;
-  return "info" as const;
-}
 
 function configRecord(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -80,13 +79,6 @@ function configText(value: unknown, key: string) {
   const candidate = configRecord(value)?.[key];
   return typeof candidate === "string" ? candidate : null;
 }
-
-const timeFormatter = new Intl.DateTimeFormat("en-GB", {
-  day: "2-digit",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-});
 
 export function SolverJobPanel({
   planStartDate,
@@ -154,7 +146,7 @@ export function SolverJobPanel({
               <SelectInput name="baseScenarioId" required defaultValue={baseScenarios[0]?.id ?? ""}>
                 {baseScenarios.map((scenario) => (
                   <option key={scenario.id} value={scenario.id}>
-                    {scenario.name} · {scenario.status}
+                    {scenario.name} · {scenarioStatusLabel(scenario.status)}
                   </option>
                 ))}
               </SelectInput>
@@ -226,7 +218,7 @@ export function SolverJobPanel({
               <SelectInput name="baseScenarioId" required defaultValue={baseScenarios[0]?.id ?? ""}>
                 {baseScenarios.map((scenario) => (
                   <option key={scenario.id} value={scenario.id}>
-                    {scenario.name} · {scenario.status}
+                    {scenario.name} · {scenarioStatusLabel(scenario.status)}
                   </option>
                 ))}
               </SelectInput>
@@ -284,7 +276,7 @@ export function SolverJobPanel({
         <section className="planning-job-history">
           <div className="planning-job-history-title">
             <strong>Recent jobs</strong>
-            <span>QUEUED → RUNNING → SUCCEEDED / FAILED</span>
+            <span>Recent recovery calculations and their outcome</span>
           </div>
 
           {jobs.length === 0 ? (
@@ -307,16 +299,16 @@ export function SolverJobPanel({
                     <div className="planning-job-main">
                       <div>
                         <strong>{resourceLabel}</strong>
-                        <Badge tone={tone(job.status)}>
-                          {job.status}
+                        <Badge tone={solverJobStatusTone(job.status)}>
+                          {solverJobStatusLabel(job.status)}
                         </Badge>
                       </div>
 
                       <span>
                         {startDate}
                         {endDate !== startDate ? ` → ${endDate}` : ""}
-                        {" · "}
-                        queued {timeFormatter.format(job.queuedAt)}
+                        {" · queued "}
+                        <LocalTime value={job.queuedAt.toISOString()} />
                       </span>
 
                       {job.failureMessage ? (
@@ -325,12 +317,32 @@ export function SolverJobPanel({
                           {job.failureMessage}
                         </p>
                       ) : run ? (
-                        <small>
-                          Run: {run.status}
-                          {run.objectiveValue !== null
-                            ? ` · score ${run.objectiveValue}`
-                            : ""}
-                        </small>
+                        <>
+                          <small>
+                            {solverRunOutcomeLabel(run.status)}
+                          </small>
+
+                          <details>
+                            <summary>Technical details</summary>
+                            <div
+                              style={{
+                                display: "grid",
+                                gap: "0.25rem",
+                                marginTop: "0.4rem",
+                              }}
+                            >
+                              <small>
+                                Internal run status: {run.status}
+                              </small>
+
+                              {run.objectiveValue !== null ? (
+                                <small>
+                                  Solver score: {run.objectiveValue}
+                                </small>
+                              ) : null}
+                            </div>
+                          </details>
+                        </>
                       ) : null}
                     </div>
 
